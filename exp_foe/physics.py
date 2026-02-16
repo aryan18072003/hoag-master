@@ -6,7 +6,7 @@ import deepinv as dinv
 
 
 # ==========================================
-#  FoE CONFIGURATION (matching paper)
+#  FoE CONFIGURATION
 # ==========================================
 NUM_EXPERTS = 5       # J: number of expert filters (paper: 10)
 FILTER_SIZE = 5       # K: spatial filter size (paper: 7)
@@ -195,35 +195,17 @@ def initialize_theta(device):
 
 
 # ==========================================
-#  4. INNER LOSS (h in HOAG) — Paper's FoE
+#  4. INNER LOSS (h in HOAG) 
 # ==========================================
 def inner_loss_func(w, theta, y, physics_op):
-    """
-    Inner objective h(w, θ) using the paper's Field of Experts formulation.
 
-    h(w, θ) = mean(||y - Aw||²)  +  R_θ(w)
-
-    where R_θ(w) = e^{θ₀} · Σⱼ e^{θⱼ} · ||cⱼ * w||_{ν_j}
-          ||x||_ν = mean(√(xᵢ² + ν²) - ν)     (smoothed 1-norm)
-          ν_j = exp(θ_{J+j})                    (positivity via exp)
-
-    Args:
-        w: Reconstructed image (B, C, H, W)
-        theta: Flat hyperparameter vector (size THETA_SIZE)
-        y: Measured sinogram/k-space data
-        physics_op: Forward physics operator A
-
-    Returns:
-        Scalar loss value
-    """
-    # --- DATA FIDELITY: mean(||y - Aw||²) ---
     residual = y - physics_op(w)
     fid = torch.mean(residual ** 2)
 
     # --- PARSE θ ---
     global_weight, filter_weights, smoothing_params, filters = parse_theta(theta)
 
-    # --- FIELD OF EXPERTS REGULARIZATION (paper's formula) ---
+    # --- FIELD OF EXPERTS REGULARIZATION  ---
     #
     # R_θ(w) = e^{θ₀} · Σⱼ e^{θⱼ} · ||cⱼ * w||_{ν_j}
     #
@@ -233,14 +215,13 @@ def inner_loss_func(w, theta, y, physics_op):
 
     for j in range(NUM_EXPERTS):
         # Convolution: cⱼ * w  (multi-channel: cⱼ has shape (1, C, K, K))
-        # F.conv2d with (1, C, K, K) filter on (B, C, H, W) input → (B, 1, H, W) output
         c_j = filters[j:j+1]  # shape: (1, C, K, K)
         response = F.conv2d(w, c_j, padding=FILTER_SIZE // 2)  # (B, 1, H, W)
 
         # Smoothing parameter: ν_j = exp(θ_{J+j}) — positive by construction
         nu_j = torch.exp(smoothing_params[j].clamp(max=2.0))
 
-        # Smoothed 1-norm: ||cⱼ * w||_{ν_j} = mean(√(z² + ν²) - ν)
+        # Smoothed 1-norm: ||cⱼ * w||_{ν_j} = mean(√(z^2 + ν^2) - ν)
         smoothed_norm = torch.mean(torch.sqrt(response ** 2 + nu_j ** 2) - nu_j)
 
         # Per-filter weight: e^{θⱼ}

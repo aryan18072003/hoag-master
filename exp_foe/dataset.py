@@ -10,7 +10,6 @@ class MSDDataset(Dataset):
     def __init__(self, root_dir, task_name, img_size=128, modality="CT", subset_size=None):
         
         path_standard = os.path.join(root_dir, task_name)
-        # Check Nested Path:   ./Task09_Spleen/Task09_Spleen/imagesTr
         path_nested = os.path.join(root_dir, task_name, task_name)
         
         if os.path.exists(os.path.join(path_standard, "imagesTr")):
