@@ -1,27 +1,3 @@
-"""
-main.py — Task-Driven Physics Optimization via HOAG
-====================================================
-
-Experiment: Automatically learn optimal regularization hyperparameters (θ)
-for a physics-based CT reconstruction algorithm (Inverse Radon Transform)
-by maximizing the performance of a downstream segmentation network (U-Net).
-
-This uses the HOAG (Hyperparameter Optimization with Approximate Gradient)
-bilevel optimization approach:
-    Inner Problem: Solve Tikhonov/TV-regularized reconstruction
-    Outer Problem: Minimize segmentation loss (Dice + BCE) via U-Net
-
-The experiment runs 4 phases:
-    Phase 1: Upper Bound — Train U-Net on clean ground truth (best possible)
-    Phase 2: Lower Bound — Test clean U-Net on noisy reconstructions (worst case)
-    Phase 3: Approach 1 — Fix U-Net, optimize θ only via HOAG
-    Phase 4: Approach 2 — Joint optimization of θ + U-Net weights
-
-Reference:
-    Pedregosa, F. "Hyperparameter optimization with approximate gradient."
-    ICML 2016. http://jmlr.org/proceedings/papers/v48/pedregosa16.html
-"""
-
 import os
 import sys
 import torch
@@ -33,7 +9,6 @@ from models import UNet
 from dataset import MSDDataset
 from physics import get_physics_operator, inner_loss_func, robust_normalize
 
-# Import the HOAG optimizer (new file — mirrors the original hoag/hoag.py)
 from hoag import HOAGState, hoag_step, solve_inner_problem
 
 
@@ -65,9 +40,6 @@ class Config:
     CENTER_FRAC = 0.08
     
     # --- INNER OPTIMIZATION SETTINGS ---
-    # These control how precisely the reconstruction is solved.
-    # HOAG's tolerance schedule will override the fixed step count
-    # with adaptive early stopping (see hoag.py solve_inner_problem).
     INNER_STEPS = 100    # Max inner optimization steps
     INNER_LR = 0.02      # Adam learning rate for inner solver
     
@@ -77,7 +49,6 @@ class Config:
     LR_THETA = 1e-3      # Adam lr for hyperparameters θ
     
     # --- HOAG-SPECIFIC SETTINGS ---
-    # (See original hoag/hoag.py lines 13-14 for reference)
     HOAG_EPSILON_TOL_INIT = 1e-3    # Initial tolerance (hoag.py default)
     HOAG_TOLERANCE_DECREASE = 'exponential'  # Schedule: 'exponential', 'quadratic', 'cubic'
     HOAG_DECREASE_FACTOR = 0.9      # Exponential decay factor (hoag.py default)
@@ -90,13 +61,7 @@ class Config:
 #        2. HELPER FUNCTIONS
 # ==========================================
 class DiceBCELoss(nn.Module):
-    """
-    Combined Dice + BCE loss for segmentation.
-    Dice Loss: Measures global overlap between prediction and ground truth.
-    BCE Loss: Measures pixel-wise accuracy.
-    
-    This is the OUTER/VALIDATION loss g(w*(θ)) in HOAG's bilevel framework.
-    """
+
     def __init__(self, weight=None, size_average=True):
         super(DiceBCELoss, self).__init__()
         self.bce = nn.BCELoss()
@@ -105,7 +70,7 @@ class DiceBCELoss(nn.Module):
         # 1. BCE Loss (Pixel-wise accuracy)
         bce_loss = self.bce(inputs, targets)
         
-        # 2. Soft Dice Loss (Global overlap)
+        # 2. Soft Dice Loss
         inputs = inputs.view(-1)
         targets = targets.view(-1)
         
@@ -119,7 +84,6 @@ class DiceBCELoss(nn.Module):
 
 
 def print_progress(epoch, batch, total_batches, loss, theta, info=""):
-    """Print training progress with current hyperparameter values."""
     reg_val = torch.exp(theta[0]).item()
     eps_val = torch.exp(theta[1]).item()
     sys.stdout.write(f"\r[{info}] Ep {epoch+1} | Batch {batch+1}/{total_batches} | "
@@ -128,14 +92,6 @@ def print_progress(epoch, batch, total_batches, loss, theta, info=""):
 
 
 def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
-    """
-    Validation logic computing Dice score.
-    
-    Supports three modes matching the experiment phases:
-        clean: Direct clean input → U-Net (Upper Bound)
-        noisy: Noisy reconstruction → U-Net (Lower Bound)
-        hoag:  HOAG-optimized reconstruction → U-Net (Approach 1 & 2)
-    """
     model.eval()
     dice_score = 0.0
     
@@ -255,8 +211,6 @@ def run_experiment():
     # ====================================================================
     # PHASE 2: LOWER BOUND — Test Clean Model on Noisy Physics
     # ====================================================================
-    # Quantifies the domain gap: how much performance drops when the U-Net
-    # (trained on clean images) receives noisy, sparse CT reconstructions.
     print("\n--- PHASE 2: Lower Bound (Testing Clean Model on Noisy Physics) ---")
     results['Lower Bound'] = validate(model_upper, test_loader, physics, theta=dummy_theta, mode="noisy")
     print(f" -> Final Lower Bound (Noisy): {results['Lower Bound']:.4f}")
@@ -264,22 +218,6 @@ def run_experiment():
     # ====================================================================
     # PHASE 3: APPROACH 1 — HOAG: Optimize θ Only (Fixed U-Net)
     # ====================================================================
-    # This phase uses the HOAG bilevel optimization algorithm:
-    #   - The U-Net weights are FROZEN (from Phase 1)
-    #   - Only the physics hyperparameters θ = [log(λ), log(ε)] are optimized
-    #   - θ controls the TV regularization in the inner reconstruction problem
-    #
-    # HOAG Algorithm per Batch:
-    #   1. Solve inner problem: w* = argmin_w ||y-Aw||² + exp(θ₀)·TV(w, exp(θ₁))
-    #      with tolerance-based stopping (HOAG's key innovation)
-    #   2. Compute outer loss: g = DiceBCE(UNet(w*), mask)
-    #   3. Compute hypergradient dg/dθ via implicit differentiation:
-    #      dg/dθ = ∂g/∂θ - (∂g/∂w) · H⁻¹ · (∂²h/∂w∂θ)
-    #   4. Update θ using Adam (with HOAG-computed gradient)
-    #
-    # The tolerance decreases each iteration (HOAG's efficiency trick):
-    #   Early: solve roughly → fast but imprecise hypergradient
-    #   Late:  solve precisely → slow but accurate hypergradient
     print("\n--- PHASE 3: Approach 1 (HOAG — Optimizing Theta Only) ---")
     
     # Load the clean model and FREEZE all weights
@@ -291,17 +229,11 @@ def run_experiment():
         p.requires_grad = False  # Freeze all U-Net weights
     
     # Initialize θ in log-space:
-    #   θ[0] = log(λ) ≈ -4.6 → λ ≈ 0.01 (regularization weight)
-    #   θ[1] = log(ε) ≈ -5.0 → ε ≈ 0.007 (TV smoothing parameter)
     theta = torch.tensor([-4.6, -5.0], device=Config.DEVICE).requires_grad_(True)
     
-    # Adam optimizer for θ — receives gradients computed by HOAG
-    # (We use Adam instead of HOAG's simple 1/L step-size for better convergence)
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
     # Initialize HOAG State — tracks tolerance schedule and CG warm-start
-    # This is the PyTorch equivalent of the state variables in hoag.py lines 82-98:
-    #   epsilon_tol, Bxk (warm-start), g_func_old, norm_init
     hoag_state = HOAGState(
         epsilon_tol_init=Config.HOAG_EPSILON_TOL_INIT,
         tolerance_decrease=Config.HOAG_TOLERANCE_DECREASE,
@@ -315,18 +247,11 @@ def run_experiment():
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
             # --- Simulate Noisy Sparse-View CT Scan ---
-            # y = A·x + η  (forward projection + noise)
+            # y = A·x + n  (forward projection + noise)
             y_clean = physics(torch.cat([img, torch.zeros_like(img)], 1))
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # --- HOAG STEP ---
-            # This single call performs the complete HOAG outer iteration:
-            #   1. Solves inner problem to current tolerance (w*)
-            #   2. Computes Hessian-vector products via autograd
-            #   3. Solves H·q = ∂g/∂w via CG (with warm-start)
-            #   4. Computes hypergradient via implicit differentiation
-            #   5. Decreases tolerance for next iteration
-            # See hoag.py hoag_step() for detailed documentation.
             hyper_grad, val_loss_value, w_star = hoag_step(
                 theta=theta,
                 y=y,
@@ -343,15 +268,10 @@ def run_experiment():
             )
             
             # --- Update θ using Adam with the HOAG-computed hypergradient ---
-            # The hypergradient is clamped to [-1, 1] for stability
-            # (prevents explosive updates from noisy CG solutions)
             opt_theta.zero_grad()
             theta.grad = hyper_grad.clamp(-1.0, 1.0)
             opt_theta.step()
             
-            # Project θ to valid range (similar to original hoag.py lines 196-197)
-            # θ[0] ∈ [-9, -2] → λ = exp(θ₀) ∈ [0.00012, 0.135]
-            # θ[1] ∈ [-12, -2] → ε = exp(θ₁) ∈ [6e-6, 0.135]
             with torch.no_grad():
                 theta[0].clamp_(-9.0, -2.0)
                 theta[1].clamp_(-12.0, -2.0)
@@ -367,17 +287,6 @@ def run_experiment():
     # ====================================================================
     # PHASE 4: APPROACH 2 — HOAG Joint Learning (θ + U-Net)
     # ====================================================================
-    # This phase performs JOINT optimization:
-    #   - Both the physics parameters θ AND the U-Net weights are trained
-    #   - θ is updated via HOAG hypergradient (same as Phase 3)
-    #   - U-Net weights are updated via standard backprop on the task loss
-    #
-    # Alternating optimization per batch:
-    #   Step A: Fix θ → train U-Net on w*(θ) reconstructions (standard SGD/Adam)
-    #   Step B: Fix U-Net → compute HOAG hypergradient → update θ (Adam)
-    #
-    # This allows the U-Net to ADAPT to the reconstruction quality,
-    # while the reconstruction adapts to what the U-Net needs.
     print("\n--- PHASE 4: Approach 2 (Joint Learning — Theta + U-Net) ---")
     
     # Start from the clean model (Phase 1 weights) — fine-tune jointly
@@ -411,10 +320,6 @@ def run_experiment():
             # ============================================================
             # STEP A: Update U-Net Weights (Standard Backprop)
             # ============================================================
-            # Solve inner problem for current θ to get reconstruction w*
-            # Then train U-Net on this reconstruction (no HOAG needed here)
-            
-            # Inner solve using HOAG's tolerance-based stopping
             w_for_unet, _ = solve_inner_problem(
                 w_init=physics.A_dagger(y).detach().clone(),
                 theta=theta,
@@ -440,12 +345,8 @@ def run_experiment():
             # ============================================================
             # STEP B: Update θ via HOAG Hypergradient
             # ============================================================
-            # Freeze model for hypergradient calculation
-            # (We want dg/dθ with fixed U-Net weights for this step)
             model_joint.eval()
             
-            # HOAG step computes the full hypergradient:
-            #   dg/dθ = ∂g/∂θ - (∂g/∂w)·H⁻¹·(∂²h/∂w∂θ)
             hyper_grad, val_loss_value, w_star = hoag_step(
                 theta=theta,
                 y=y,
