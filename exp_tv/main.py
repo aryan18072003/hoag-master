@@ -365,7 +365,7 @@ def run_experiment():
             theta.grad = hyper_grad.clamp(-1.0, 1.0)
             opt_theta.step()
             
-            # Project θ to valid range (original hoag.py lines 196-197)
+            # Project θ to valid range
             with torch.no_grad():
                 theta[0].clamp_(-9.0, -2.0)
                 theta[1].clamp_(-12.0, -2.0)
