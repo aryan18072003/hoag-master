@@ -1,30 +1,3 @@
-"""
-physics.py — CT/MRI Physics + Field of Experts (FoE) Regularizer
-================================================================
-
-FoE regularizer matching the paper's formulation exactly:
-
-    R_θ(x) = e^{θ₀} · Σⱼ₌₁ᴶ e^{θⱼ} · ||cⱼ * x||_{θ_{J+j}}
-
-where:
-    ||x||_ν = Σᵢ √(xᵢ² + ν²) - ν     (smoothed 1-norm)
-
-    θ₀        = global log-weight
-    θⱼ        = per-filter log-weight (j=1..J)
-    θ_{J+j}   = smoothing parameter ν_j (j=1..J), via exp() for positivity
-    cⱼ        = learned 2D conv kernel (part of θ)
-
-Practical choices for our CT setup (128×128, 2 channels):
-    J = 5 expert filters   (paper uses 10 for 96×96 RGB)
-    K = 5×5 kernel size    (paper uses 7×7 for 96×96)
-    C = 2 input channels   (real + imaginary from CT)
-
-Total parameters: 1 + J + J + J·C·K² = 1 + 5 + 5 + 5·2·25 = 261
-
-Dependencies:
-    deepinv: Differentiable physics operators (Tomography, MRI)
-"""
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -38,11 +11,6 @@ import deepinv as dinv
 NUM_EXPERTS = 5       # J: number of expert filters (paper: 10)
 FILTER_SIZE = 5       # K: spatial filter size (paper: 7)
 IN_CHANNELS = 2       # C: input channels (paper: 3 for RGB, 2 for CT complex)
-
-# θ layout: [θ₀, θ₁..θⱼ, θ_{J+1}..θ_{2J}, c₁_flat, ..., cⱼ_flat]
-#            ↑    ↑─────↑   ↑──────────────↑   ↑────────────────────↑
-#          global  filter    smoothing ν_j      filter coefficients
-#          weight  weights
 
 N_SCALAR_PARAMS = 1 + NUM_EXPERTS + NUM_EXPERTS   # 1 + J + J = 11
 N_FILTER_PARAMS = NUM_EXPERTS * IN_CHANNELS * FILTER_SIZE * FILTER_SIZE  # 5*2*25 = 250
