@@ -104,18 +104,17 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
         
         # --- MODE 2: NOISY (Lower Bound) ---
         elif mode == "noisy":
-            y_clean = physics_op(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics_op(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             with torch.no_grad():
                 x_recon = physics_op.A_dagger(y)
                 
-            x_mag = torch.sqrt(x_recon[:,0:1]**2 + x_recon[:,1:2]**2 + 1e-8)
-            x_in = robust_normalize(x_mag)
+            x_in = robust_normalize(x_recon)
 
         # --- MODE 3: HOAG (Optimized Reconstruction) ---
         elif mode == "hoag":
-            y_clean = physics_op(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics_op(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # Solve inner problem with the HOAG-optimized theta
@@ -132,8 +131,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
                     with torch.no_grad(): w.clamp_(0.0, 1.0)
             x_recon = w.detach()
             
-            x_mag = torch.sqrt(x_recon[:,0:1]**2 + x_recon[:,1:2]**2 + 1e-8)
-            x_in = robust_normalize(x_mag)
+            x_in = robust_normalize(x_recon)
 
         # Predict segmentation mask
         with torch.no_grad():
@@ -248,7 +246,7 @@ def run_experiment():
             
             # --- Simulate Noisy Sparse-View CT Scan ---
             # y = A·x + n  (forward projection + noise)
-            y_clean = physics(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # --- HOAG STEP ---
@@ -314,7 +312,7 @@ def run_experiment():
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
             # Simulate noisy sparse-view CT scan
-            y_clean = physics(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # ============================================================
@@ -334,7 +332,7 @@ def run_experiment():
             
             # Detach w* from inner graph — U-Net training doesn't flow gradients to θ
             w_fixed = w_for_unet.detach().clone().requires_grad_(False)
-            x_in = robust_normalize(torch.sqrt(w_fixed[:,0:1]**2 + w_fixed[:,1:2]**2 + 1e-8))
+            x_in = robust_normalize(w_fixed)
             
             model_joint.train()
             opt_model.zero_grad()
