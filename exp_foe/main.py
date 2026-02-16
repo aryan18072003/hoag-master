@@ -1,23 +1,3 @@
-"""
-main.py — Task-Driven Physics Optimization via HOAG (FoE Regularizer)
-=====================================================================
-
-Same experiment as my_exp/main.py but using Field of Experts (FoE)
-as the regularizer instead of smooth Total Variation (TV).
-
-Key differences from my_exp/main.py:
-    1. θ has 50 parameters (5 weights + 45 filter coefficients) vs 2
-    2. θ is initialized with derivative-like filters
-    3. Clamping applies only to weights, not filter coefficients
-    4. Progress display shows mean weight and filter norm
-
-The 4-phase structure is identical:
-    Phase 1: Upper Bound — Train U-Net on clean ground truth
-    Phase 2: Lower Bound — Test clean U-Net on noisy reconstructions
-    Phase 3: Approach 1 — Fix U-Net, optimize θ only via HOAG
-    Phase 4: Approach 2 — Joint optimization of θ + U-Net weights
-"""
-
 import os
 import sys
 import random
@@ -33,7 +13,6 @@ from physics import (get_physics_operator, inner_loss_func, robust_normalize,
                      initialize_theta, parse_theta, NUM_EXPERTS,
                      FILTER_SIZE, IN_CHANNELS, THETA_SIZE)
 
-# Import the HOAG optimizer (same as my_exp — algorithm is regularizer-agnostic)
 from hoag import HOAGState, hoag_step, solve_inner_problem
 
 
@@ -41,11 +20,7 @@ from hoag import HOAGState, hoag_step, solve_inner_problem
 #        1. CONFIGURATION
 # ==========================================
 class Config:
-    """
-    Central configuration for the FoE experiment.
-    Physics settings are identical to my_exp.
-    FoE-specific settings are at the bottom.
-    """
+
     DATA_ROOT = "./"
     TASK = "Task09_Spleen"
     OUTPUT_DIR = "./results_hoag_foe"
@@ -72,17 +47,17 @@ class Config:
     # --- OUTER OPTIMIZATION SETTINGS ---
     EPOCHS_CLEAN = 50     # Phase 1: enough to fully converge on clean data
     EPOCHS_HOAG = 15      # Phase 3: HOAG theta optimization
-    EPOCHS_JOINT = 10      # Phase 4: fine-tuning (short — model is already pretrained)
+    EPOCHS_JOINT = 10      # Phase 4: fine-tuning 
     LR_UNET = 1e-3
     LR_THETA = 1e-3   # Conservative for 261-param FoE
     
     # --- HOAG-SPECIFIC SETTINGS ---
     HOAG_EPSILON_TOL_INIT = 1e-3
     HOAG_TOLERANCE_DECREASE = 'exponential'
-    HOAG_DECREASE_FACTOR = 0.995   # Per-batch: 0.995^18 ≈ 0.91/epoch (not 0.9^18 = 0.15!)
+    HOAG_DECREASE_FACTOR = 0.995 
     HOAG_CG_MAX_ITER = 20
     
-    # --- FoE-SPECIFIC SETTINGS (matching paper) ---
+    # --- FoE-SPECIFIC SETTINGS  ---
     NUM_EXPERTS = NUM_EXPERTS        # J=5 expert filters
     FILTER_SIZE = FILTER_SIZE        # 5×5 kernels
     IN_CHANNELS = IN_CHANNELS        # 2 channels (CT complex)
@@ -95,7 +70,6 @@ class Config:
 #        2. HELPER FUNCTIONS
 # ==========================================
 class DiceBCELoss(nn.Module):
-    """Combined Dice + BCE loss for segmentation (same as my_exp)."""
     def __init__(self, weight=None, size_average=True):
         super(DiceBCELoss, self).__init__()
         self.bce = nn.BCELoss()
@@ -111,7 +85,6 @@ class DiceBCELoss(nn.Module):
 
 
 def print_progress(epoch, batch, total_batches, loss, theta, info=""):
-    """Print training progress with paper-FoE hyperparameter summary."""
     global_w, filt_w, smooth_p, filters = parse_theta(theta)
     gw = torch.exp(global_w).item()
     mean_fw = torch.exp(filt_w).mean().item()
@@ -123,10 +96,6 @@ def print_progress(epoch, batch, total_batches, loss, theta, info=""):
 
 
 def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
-    """
-    Validation logic computing Dice score.
-    Identical to my_exp except using FoE inner loss.
-    """
     model.eval()
     dice_score = 0.0
     
@@ -179,10 +148,10 @@ def clamp_theta(theta):
     Project θ to valid range for paper's FoE.
     
     Clamping:
-        - θ₀ (global weight): [-6, 4]     (exp range: [0.002, 54.6])
-        - θⱼ (filter weights): [-6, 4]     (exp range: [0.002, 54.6])
-        - νⱼ (smoothing): [-8, 2]           (exp range: [0.0003, 7.4])
-        - Filter coefficients: NOT clamped  (learned freely)
+        - (global weight): [-6, 4]     (exp range: [0.002, 54.6])
+        - (filter weights): [-6, 4]     (exp range: [0.002, 54.6])
+        - (smoothing): [-8, 2]           (exp range: [0.0003, 7.4])
+        - Filter coefficients: NOT clamped  
     """
     with torch.no_grad():
         # Global weight
@@ -197,7 +166,6 @@ def clamp_theta(theta):
 #        4. MAIN EXPERIMENT
 # ==========================================
 def run_experiment():
-    # Set seed for reproducible results (same data splits across runs)
     SEED = 42
     random.seed(SEED)
     np.random.seed(SEED)
@@ -234,7 +202,7 @@ def run_experiment():
     
     loss_fn = DiceBCELoss()
     results = {}
-    # Dummy theta for phases that don't use HOAG
+    # Dummy theta
     dummy_theta = torch.zeros(Config.THETA_SIZE, device=Config.DEVICE)
     
     # ====================================================================
@@ -273,9 +241,9 @@ def run_experiment():
     print(f" -> Final Lower Bound (Noisy): {results['Lower Bound']:.6f}")
 
     # ====================================================================
-    # PHASE 3: APPROACH 1 — HOAG: Optimize θ Only (Fixed U-Net)
+    # PHASE 3: APPROACH 1 — HOAG: Optimize theta Only (Fixed U-Net)
     # ====================================================================
-    # Same structure as my_exp Phase 3, but θ now has 50 FoE parameters
+    # Same structure as my_exp Phase 3, but theta now has 50 FoE parameters
     print("\n--- PHASE 3: Approach 1 (HOAG + FoE — Optimizing Theta Only) ---")
     
     model_fixed = UNet().to(Config.DEVICE)
@@ -284,7 +252,7 @@ def run_experiment():
     for p in model_fixed.parameters():
         p.requires_grad = False
     
-    # Initialize θ with derivative-like FoE filters
+    # Initialize theta with derivative-like FoE filters
     theta = initialize_theta(Config.DEVICE).requires_grad_(True)
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
@@ -321,7 +289,7 @@ def run_experiment():
             opt_theta.zero_grad()
             # Norm-based gradient clipping (preserves direction, unlike element-wise clamp)
             grad_norm = hyper_grad.norm()
-            max_grad_norm = 10.0  # Higher for 261-dim θ
+            max_grad_norm = 10.0  # Higher for 261-dim theta
             if grad_norm > max_grad_norm:
                 hyper_grad = hyper_grad * (max_grad_norm / grad_norm)
             theta.grad = hyper_grad
@@ -337,7 +305,7 @@ def run_experiment():
     print(f" -> Final Approach 1 Score: {results['Approach 1']:.4f}")
 
     # ====================================================================
-    # PHASE 4: APPROACH 2 — HOAG Joint Learning (θ + U-Net)
+    # PHASE 4: APPROACH 2 — HOAG Joint Learning (theta + U-Net)
     # ====================================================================
     print("\n--- PHASE 4: Approach 2 (Joint Learning — FoE Theta + U-Net) ---")
     
@@ -345,7 +313,7 @@ def run_experiment():
     model_joint.load_state_dict(torch.load(ckpt_path))
     opt_model = torch.optim.Adam(model_joint.parameters(), lr=Config.LR_UNET)
     
-    # Warm-start θ from Phase 3
+    # Warm-start theta from Phase 3
     theta = torch.load(path_hoag)['theta'].to(Config.DEVICE).requires_grad_(True)
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
@@ -387,7 +355,7 @@ def run_experiment():
             loss_unet.backward()
             opt_model.step()
             
-            # STEP B: Update θ via HOAG Hypergradient
+            # STEP B: Update theta via HOAG Hypergradient
             model_joint.eval()
             
             hyper_grad, val_loss_value, w_star = hoag_step(
@@ -408,7 +376,7 @@ def run_experiment():
             opt_theta.zero_grad()
             # Norm-based gradient clipping (preserves direction, unlike element-wise clamp)
             grad_norm = hyper_grad.norm()
-            max_grad_norm = 10.0  # Higher for 261-dim θ
+            max_grad_norm = 10.0  # Higher for 261-dim theta
             if grad_norm > max_grad_norm:
                 hyper_grad = hyper_grad * (max_grad_norm / grad_norm)
             theta.grad = hyper_grad
@@ -449,7 +417,6 @@ def run_experiment():
         f.write(f"3. Approach 1 (HOAG theta):  {results['Approach 1']:.4f}\n")
         f.write(f"4. Approach 2 (HOAG joint):  {results['Approach 2']:.4f}\n")
         
-        # Also save final θ values for analysis
         f.write(f"\n--- Final Theta ---\n")
         global_w, filt_w, smooth_p, filters = parse_theta(theta)
         f.write(f"Global weight: e^{global_w.item():.4f} = {torch.exp(global_w).item():.6f}\n")
