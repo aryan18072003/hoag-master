@@ -135,8 +135,7 @@ def hoag_step(theta, y, physics_op, model, loss_fn, mask,
     w_star = w_star.detach().requires_grad_(True)
 
     from physics import robust_normalize  
-    x_mag = torch.sqrt(w_star[:, 0:1]**2 + w_star[:, 1:2]**2 + 1e-8)
-    x_in = robust_normalize(x_mag)
+    x_in = robust_normalize(w_star)
     
     pred = model(x_in)
     val_loss = loss_fn(pred, mask)

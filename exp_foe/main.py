@@ -106,15 +106,14 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
             x_in = robust_normalize(img)
         
         elif mode == "noisy":
-            y_clean = physics_op(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics_op(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             with torch.no_grad():
                 x_recon = physics_op.A_dagger(y)
-            x_mag = torch.sqrt(x_recon[:,0:1]**2 + x_recon[:,1:2]**2 + 1e-8)
-            x_in = robust_normalize(x_mag)
+            x_in = robust_normalize(x_recon)
 
         elif mode == "hoag":
-            y_clean = physics_op(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics_op(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             w = physics_op.A_dagger(y).detach().clone()
@@ -130,8 +129,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
                     with torch.no_grad(): w.clamp_(0.0, 1.0)
             x_recon = w.detach()
             
-            x_mag = torch.sqrt(x_recon[:,0:1]**2 + x_recon[:,1:2]**2 + 1e-8)
-            x_in = robust_normalize(x_mag)
+            x_in = robust_normalize(x_recon)
 
         with torch.no_grad():
             pred = (model(x_in) > 0.5).float()
@@ -268,7 +266,7 @@ def run_experiment():
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
-            y_clean = physics(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             hyper_grad, val_loss_value, w_star = hoag_step(
@@ -330,7 +328,7 @@ def run_experiment():
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
-            y_clean = physics(torch.cat([img, torch.zeros_like(img)], 1))
+            y_clean = physics(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # STEP A: Update U-Net Weights
@@ -347,7 +345,7 @@ def run_experiment():
             )
             
             w_fixed = w_for_unet.detach().clone().requires_grad_(False)
-            x_in = robust_normalize(torch.sqrt(w_fixed[:,0:1]**2 + w_fixed[:,1:2]**2 + 1e-8))
+            x_in = robust_normalize(w_fixed)
             
             model_joint.train()
             opt_model.zero_grad()
