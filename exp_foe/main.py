@@ -72,7 +72,7 @@ class Config:
     # --- OUTER OPTIMIZATION SETTINGS ---
     EPOCHS_CLEAN = 50     # Phase 1: enough to fully converge on clean data
     EPOCHS_HOAG = 15      # Phase 3: HOAG theta optimization
-    EPOCHS_JOINT = 5      # Phase 4: fine-tuning (short — model is already pretrained)
+    EPOCHS_JOINT = 10      # Phase 4: fine-tuning (short — model is already pretrained)
     LR_UNET = 1e-3
     LR_THETA = 1e-3   # Conservative for 261-param FoE
     
