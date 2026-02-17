@@ -4,38 +4,17 @@ import torch.autograd as autograd
 
 # ==========================================
 #  1. HESSIAN-VECTOR PRODUCT (HVP)
-#     via Finite Differences
+#     via Exact Autograd (double backprop)
 # ==========================================
 def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_eps=1e-4):
-
-    v_detached = v.detach()
-    
-    w_plus = (w_star.detach() + fd_eps * v_detached).requires_grad_(True)
-    loss_plus = inner_loss_fn(w_plus, theta.detach(), y, physics_op)
-    grad_plus = autograd.grad(loss_plus, w_plus, retain_graph=False)[0]
-    
-    w_minus = (w_star.detach() - fd_eps * v_detached).requires_grad_(True)
-    loss_minus = inner_loss_fn(w_minus, theta.detach(), y, physics_op)
-    grad_minus = autograd.grad(loss_minus, w_minus, retain_graph=False)[0]
-    
-    Hv = (grad_plus - grad_minus) / (2.0 * fd_eps)
-    
+    """Exact HVP via double backprop: H·v = ∇_w(⟨∇_w h, v⟩)"""
+    w = w_star.detach().requires_grad_(True)
+    with torch.enable_grad():
+        loss = inner_loss_fn(w, theta.detach(), y, physics_op)
+        grad_w = autograd.grad(loss, w, create_graph=True)[0]
+        grad_dot_v = torch.sum(grad_w * v.detach())
+        Hv = autograd.grad(grad_dot_v, w, retain_graph=False)[0]
     return Hv.detach()
-
-
-# ==========================================
-#  COMMENTED OUT: Exact Autograd HVP
-#  Does NOT work with DeepInv Tomography (grid_sample has no 2nd derivatives)
-# ==========================================
-# def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_eps=1e-4):
-#     """Exact HVP via double backprop: H·v = ∇_w(⟨∇_w h, v⟩)"""
-#     w = w_star.detach().requires_grad_(True)
-#     with torch.enable_grad():
-#         loss = inner_loss_fn(w, theta.detach(), y, physics_op)
-#         grad_w = autograd.grad(loss, w, create_graph=True)[0]
-#         grad_dot_v = torch.sum(grad_w * v.detach())
-#         Hv = autograd.grad(grad_dot_v, w, retain_graph=False)[0]
-#     return Hv.detach()
 
 
 # ==========================================
@@ -70,7 +49,7 @@ def conjugate_gradient(inner_loss_fn, w_star, theta, y, physics_op, b,
         if torch.sqrt(rsold) < tol:
             break
         
-        # Compute H·p using finite-difference HVP
+        # Compute H·p using exact autograd HVP
         Ap = hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, p)
         Ap = Ap + 1e-3 * p
         

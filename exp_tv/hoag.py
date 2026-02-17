@@ -152,32 +152,22 @@ def hoag_step(theta, y, physics_op, model, loss_fn, mask,
     
     state.q_warmstart = q.detach().clone()
     
-    w_detached = w_star.detach().requires_grad_(True)
-    q_detached = q.detach()
-    fd_eps = 1e-4
+    # --- Exact Autograd Cross-Derivative: ∂²h/∂w∂θ · q ---
+    # Safe because ∂²h/∂w∂θ only flows through the TV regularizer
+    # (torch.roll, sqrt, exp — all support create_graph=True).
+    # The data fidelity term ||y - Aw||² doesn't depend on θ,
+    # so physics_op (which may use grid_sample) is never in this graph.
+    w_for_cross = w_star.detach().requires_grad_(True)
+    theta_for_cross = theta.detach().requires_grad_(True)
     
-    implicit_term = torch.zeros_like(theta)
+    with torch.enable_grad():
+        loss_cross = inner_loss_fn(w_for_cross, theta_for_cross, y, physics_op)
+        grad_w_cross = autograd.grad(loss_cross, w_for_cross, create_graph=True)[0]
+        grad_dot_q = torch.sum(grad_w_cross * q.detach())
+        cross_grad_theta = autograd.grad(grad_dot_q, theta_for_cross, retain_graph=False)[0]
     
-    for j in range(theta.shape[0]):
-        # Perturbation vector: e_j (unit vector along θ_j)
-        e_j = torch.zeros_like(theta)
-        e_j[j] = fd_eps
-        
-        theta_plus = (theta.detach() + e_j).requires_grad_(False)
-        w_p = w_detached.detach().requires_grad_(True)
-        loss_plus = inner_loss_fn(w_p, theta_plus, y, physics_op)
-        grad_plus = autograd.grad(loss_plus, w_p, retain_graph=False)[0]
-        
-        theta_minus = (theta.detach() - e_j).requires_grad_(False)
-        w_m = w_detached.detach().requires_grad_(True)
-        loss_minus = inner_loss_fn(w_m, theta_minus, y, physics_op)
-        grad_minus = autograd.grad(loss_minus, w_m, retain_graph=False)[0]
-        
-        cross_deriv_dot_q = torch.sum((grad_plus - grad_minus) / (2.0 * fd_eps) * q_detached)
-        implicit_term[j] = -cross_deriv_dot_q  # Negative from IFT
-    
-    direct_grad = torch.zeros_like(theta)
-    hyper_grad = direct_grad + implicit_term
+    implicit_term = -cross_grad_theta.detach()
+    hyper_grad = implicit_term  # direct_grad is zero (outer loss doesn't depend on θ directly)
     
     state.g_func_old = val_loss_value
     state.decrease_tolerance()
