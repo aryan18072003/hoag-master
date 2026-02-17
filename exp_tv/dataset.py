@@ -72,6 +72,7 @@ class MSDDataset(Dataset):
 
         img_pil = Image.fromarray((img * 255).astype(np.uint8)).resize((self.img_size, self.img_size), Image.BILINEAR)
         lbl_pil = Image.fromarray(((lbl > 0) * 255).astype(np.uint8)).resize((self.img_size, self.img_size), Image.NEAREST)
+        # nearest because val of each pixel of label can 0/1 not 0.5 or something else
         
         img_np = np.array(img_pil) / 255.0
         lbl_np = np.array(lbl_pil) / 255.0

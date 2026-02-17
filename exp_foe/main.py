@@ -48,8 +48,8 @@ class Config:
     EPOCHS_CLEAN = 50     # Phase 1: enough to fully converge on clean data
     EPOCHS_HOAG = 15      # Phase 3: HOAG theta optimization
     EPOCHS_JOINT = 10      # Phase 4: fine-tuning 
-    LR_UNET = 1e-3
-    LR_THETA = 1e-3   # Conservative for 261-param FoE
+    LR_UNET = 5e-3       # Bug #4 fix: increased from 1e-3
+    LR_THETA = 0.05       # Bug #4 fix: increased from 1e-3 (136-dim theta needs bigger steps)
     
     # --- HOAG-SPECIFIC SETTINGS ---
     HOAG_EPSILON_TOL_INIT = 1e-3
@@ -60,7 +60,7 @@ class Config:
     # --- FoE-SPECIFIC SETTINGS  ---
     NUM_EXPERTS = NUM_EXPERTS        # J=5 expert filters
     FILTER_SIZE = FILTER_SIZE        # 5×5 kernels
-    IN_CHANNELS = IN_CHANNELS        # 2 channels (CT complex)
+    IN_CHANNELS = IN_CHANNELS        # 1 channel (grayscale CT)
     THETA_SIZE = THETA_SIZE          # 261 total parameters
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -323,8 +323,8 @@ def run_experiment():
             y_clean = physics(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
-            # STEP A: Update U-Net Weights
-            w_for_unet, _ = solve_inner_problem(
+            # STEP A: Solve Inner Problem ONCE (shared between U-Net and theta updates)
+            w_star, _ = solve_inner_problem(
                 w_init=physics.A_dagger(y).detach().clone(),
                 theta=theta,
                 y=y,
@@ -336,7 +336,8 @@ def run_experiment():
                 verbose=0
             )
             
-            w_fixed = w_for_unet.detach().clone().requires_grad_(False)
+            # STEP B: Update U-Net Weights (Standard Backprop)
+            w_fixed = w_star.detach().clone().requires_grad_(False)
             x_in = robust_normalize(w_fixed)
             
             model_joint.train()
@@ -345,7 +346,7 @@ def run_experiment():
             loss_unet.backward()
             opt_model.step()
             
-            # STEP B: Update theta via HOAG Hypergradient
+            # STEP C: Update theta via HOAG Hypergradient
             model_joint.eval()
             
             hyper_grad, val_loss_value, w_star = hoag_step(

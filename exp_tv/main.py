@@ -1,5 +1,7 @@
 import os
 import sys
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.autograd as autograd
@@ -35,7 +37,7 @@ class Config:
     BATCH_SIZE = 4
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
-    ACCEL = 16         # 16x Acceleration → only 180/16 = 11 projection views
+    ACCEL = 16         # 16x Acceleration -> only 180/16 = 11 projection views
     NOISE_SIGMA = 0.1  # 10% Gaussian noise on sinogram
     CENTER_FRAC = 0.08
     
@@ -44,16 +46,16 @@ class Config:
     INNER_LR = 0.02      # Adam learning rate for inner solver
     
     # --- OUTER OPTIMIZATION SETTINGS ---
-    EPOCH_CLEAN=20
+    EPOCH_CLEAN = 20
     EPOCHS = 15
-    LR_UNET = 1e-3       # Adam lr for U-Net weights
-    LR_THETA = 1e-3      # Adam lr for hyperparameters θ
+    LR_UNET = 5e-3       # Bug #4 fix: increased from 1e-3
+    LR_THETA = 0.01       # Bug #4 fix: increased from 1e-3 (2-dim theta, needs larger steps)
     
     # --- HOAG-SPECIFIC SETTINGS ---
-    HOAG_EPSILON_TOL_INIT = 1e-3    # Initial tolerance (hoag.py default)
-    HOAG_TOLERANCE_DECREASE = 'exponential'  # Schedule: 'exponential', 'quadratic', 'cubic'
-    HOAG_DECREASE_FACTOR = 0.9      # Exponential decay factor (hoag.py default)
-    HOAG_CG_MAX_ITER = 20           # Max CG iterations for linear system
+    HOAG_EPSILON_TOL_INIT = 1e-3
+    HOAG_TOLERANCE_DECREASE = 'exponential'
+    HOAG_DECREASE_FACTOR = 0.9
+    HOAG_CG_MAX_ITER = 20
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -146,6 +148,16 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
 #        3. MAIN EXPERIMENT
 # ==========================================
 def run_experiment():
+    # Bug #6 fix: Deterministic seeding for reproducibility
+    SEED = 42
+    random.seed(SEED)
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     print(f"--- Starting Experiment: {Config.TASK} (HOAG Bilevel Optimization) ---")
     print(f"    HOAG Settings: tol_init={Config.HOAG_EPSILON_TOL_INIT}, "
           f"schedule={Config.HOAG_TOLERANCE_DECREASE}, "
@@ -221,17 +233,16 @@ def run_experiment():
     
     model_fixed = UNet().to(Config.DEVICE)
     model_fixed.load_state_dict(torch.load(ckpt_path)) 
-    #model_fixed.train()
     model_fixed.eval()
     for p in model_fixed.parameters():
         p.requires_grad = False  # Freeze all U-Net weights
     
-    # Initialize θ in log-space:
+    # Initialize theta in log-space:
     theta = torch.tensor([-4.6, -5.0], device=Config.DEVICE).requires_grad_(True)
     
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
-    # Initialize HOAG State — tracks tolerance schedule and CG warm-start
+    # Initialize HOAG State
     hoag_state = HOAGState(
         epsilon_tol_init=Config.HOAG_EPSILON_TOL_INIT,
         tolerance_decrease=Config.HOAG_TOLERANCE_DECREASE,
@@ -244,12 +255,11 @@ def run_experiment():
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
-            # --- Simulate Noisy Sparse-View CT Scan ---
-            # y = A·x + n  (forward projection + noise)
+            # Simulate Noisy Sparse-View CT Scan
             y_clean = physics(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
-            # --- HOAG STEP ---
+            # HOAG STEP
             hyper_grad, val_loss_value, w_star = hoag_step(
                 theta=theta,
                 y=y,
@@ -265,7 +275,7 @@ def run_experiment():
                 verbose=0
             )
             
-            # --- Update θ using Adam with the HOAG-computed hypergradient ---
+            # Update theta using Adam with the HOAG-computed hypergradient
             opt_theta.zero_grad()
             theta.grad = hyper_grad.clamp(-1.0, 1.0)
             opt_theta.step()
@@ -276,7 +286,7 @@ def run_experiment():
             
             print_progress(ep, i, len(train_loader), val_loss_value, theta, "Appr 1 (HOAG)")
         
-        print(f"  [ε_tol: {hoag_state.epsilon_tol:.2e}]")
+        print(f"  [epsilon_tol: {hoag_state.epsilon_tol:.2e}]")
         torch.save({'theta': theta, 'hoag_state_epsilon': hoag_state.epsilon_tol}, path_hoag)
 
     results['Approach 1'] = validate(model_fixed, test_loader, physics, theta, Config.INNER_STEPS, mode="hoag")
@@ -292,12 +302,11 @@ def run_experiment():
     model_joint.load_state_dict(torch.load(ckpt_path))
     opt_model = torch.optim.Adam(model_joint.parameters(), lr=Config.LR_UNET)
     
-    # Start from the best θ found in Phase 3 (warm-start)
+    # Start from the best theta found in Phase 3 (warm-start)
     theta = torch.load(path_hoag)['theta'].to(Config.DEVICE).requires_grad_(True)
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
     # Fresh HOAG state for Phase 4
-    # (Reset tolerance — the joint problem is different from Phase 3)
     hoag_state_joint = HOAGState(
         epsilon_tol_init=Config.HOAG_EPSILON_TOL_INIT,
         tolerance_decrease=Config.HOAG_TOLERANCE_DECREASE,
@@ -316,9 +325,9 @@ def run_experiment():
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # ============================================================
-            # STEP A: Update U-Net Weights (Standard Backprop)
+            # STEP A: Solve Inner Problem ONCE (shared between U-Net and theta updates)
             # ============================================================
-            w_for_unet, _ = solve_inner_problem(
+            w_star, _ = solve_inner_problem(
                 w_init=physics.A_dagger(y).detach().clone(),
                 theta=theta,
                 y=y,
@@ -330,8 +339,10 @@ def run_experiment():
                 verbose=0
             )
             
-            # Detach w* from inner graph — U-Net training doesn't flow gradients to θ
-            w_fixed = w_for_unet.detach().clone().requires_grad_(False)
+            # ============================================================
+            # STEP B: Update U-Net Weights (Standard Backprop)
+            # ============================================================
+            w_fixed = w_star.detach().clone().requires_grad_(False)
             x_in = robust_normalize(w_fixed)
             
             model_joint.train()
@@ -340,9 +351,7 @@ def run_experiment():
             loss_unet.backward()
             opt_model.step()
             
-            # ============================================================
-            # STEP B: Update θ via HOAG Hypergradient
-            # ============================================================
+            # STEP C: Update theta via HOAG Hypergradient
             model_joint.eval()
             
             hyper_grad, val_loss_value, w_star = hoag_step(
@@ -360,19 +369,19 @@ def run_experiment():
                 verbose=0
             )
             
-            # Update θ using Adam with HOAG-computed hypergradient
+            # Update theta using Adam with HOAG-computed hypergradient
             opt_theta.zero_grad()
             theta.grad = hyper_grad.clamp(-1.0, 1.0)
             opt_theta.step()
             
-            # Project θ to valid range
+            # Project theta to valid range
             with torch.no_grad():
                 theta[0].clamp_(-9.0, -2.0)
                 theta[1].clamp_(-12.0, -2.0)
             
             print_progress(ep, i, len(train_loader), val_loss_value, theta, "Appr 2 (Joint)")
         
-        print(f"  [ε_tol: {hoag_state_joint.epsilon_tol:.2e}]")
+        print(f"  [epsilon_tol: {hoag_state_joint.epsilon_tol:.2e}]")
         torch.save(model_joint.state_dict(), path_joint)
         torch.save({'theta': theta, 'hoag_state_epsilon': hoag_state_joint.epsilon_tol}, path_theta_joint)
 

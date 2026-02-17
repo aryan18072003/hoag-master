@@ -67,9 +67,10 @@ def solve_inner_problem(w_init, theta, y, physics_op, inner_loss_fn,
         loss_init = inner_loss_fn(w, theta.detach(), y, physics_op)
         grad_init = autograd.grad(loss_init, w, retain_graph=False)[0]
         
-        if state.norm_init is None:
-            # First call — set the reference gradient norm
-            state.norm_init = grad_init.norm().item()
+        # Reset norm_init EVERY batch — each batch is a different
+        # optimization problem with different gradient scale.
+        # NOT guarding with 'if None' (that was Bug #2).
+        state.norm_init = grad_init.norm().item()
         
         # Avoid division by zero
         if state.norm_init < 1e-12:

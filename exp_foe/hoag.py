@@ -70,9 +70,10 @@ def solve_inner_problem(w_init, theta, y, physics_op, inner_loss_fn,
         loss_init = inner_loss_fn(w, theta.detach(), y, physics_op)
         grad_init = autograd.grad(loss_init, w, retain_graph=False)[0]
         
-        if state.norm_init is None:
-            # First call — set the reference gradient norm
-            state.norm_init = grad_init.norm().item()
+        # Reset norm_init EVERY batch — each batch is a different
+        # optimization problem with different gradient scale.
+        # NOT guarding with 'if None' (that was Bug #2).
+        state.norm_init = grad_init.norm().item()
         
         # Avoid division by zero
         if state.norm_init < 1e-12:
@@ -154,11 +155,7 @@ def hoag_step(theta, y, physics_op, model, loss_fn, mask,
 
     state.q_warmstart = q.detach().clone()
     
-    # --- Exact Autograd Cross-Derivative: ∂²h/∂w∂θ · q ---
-    # Safe because ∂²h/∂w∂θ only flows through the FoE regularizer
-    # (F.conv2d, torch.exp, torch.sqrt — all support create_graph=True).
-    # The data fidelity term ||y - Aw||² doesn't depend on θ,
-    # so physics_op (which may use grid_sample) is never in this graph.
+
     w_for_cross = w_star.detach().requires_grad_(True)
     theta_for_cross = theta.detach().requires_grad_(True)
     

@@ -13,8 +13,8 @@ FILTER_SIZE = 5       # K: spatial filter size (paper: 7)
 IN_CHANNELS = 1      # C: input channels 
 
 N_SCALAR_PARAMS = 1 + NUM_EXPERTS + NUM_EXPERTS   # 1 + J + J = 11
-N_FILTER_PARAMS = NUM_EXPERTS * IN_CHANNELS * FILTER_SIZE * FILTER_SIZE  # 5*2*25 = 250
-THETA_SIZE = N_SCALAR_PARAMS + N_FILTER_PARAMS     # 11 + 250 = 261
+N_FILTER_PARAMS = NUM_EXPERTS * IN_CHANNELS * FILTER_SIZE * FILTER_SIZE  # 5*1*25 = 125
+THETA_SIZE = N_SCALAR_PARAMS + N_FILTER_PARAMS     # 11 + 125 = 136
 
 
 # ==========================================
@@ -37,34 +37,10 @@ def get_physics_operator(img_size, acceleration, center_frac, device, modality="
             angles=angles,
             img_width=img_size,
             circle=False,
-            device=device
+            device=device,
+            normalize=True    
         )
 
-        print(f"-> Computing Norm for Accel {acceleration}...")
-        norm_val = physics.compute_norm(torch.randn(1, 1, img_size, img_size, device=device))
-        print(f"   Norm found: {norm_val:.2f}. Applying normalization...")
-
-        class NormalizedPhysics(dinv.physics.Physics):
-            """Wraps a physics operator to normalize by its operator norm."""
-            def __init__(self, original_physics, norm):
-                super().__init__()
-                self.original = original_physics
-                self.norm_const = norm
-
-            def A(self, x):
-                return self.original.A(x) / self.norm_const
-
-            def A_adjoint(self, y):
-                return self.original.A_adjoint(y) / self.norm_const
-
-            def A_dagger(self, y):
-                """Pseudo-inverse (filtered backprojection for CT)."""
-                return self.original.A_dagger(y * self.norm_const)
-
-            def forward(self, x):
-                return self.A(x)
-
-        physics = NormalizedPhysics(physics, norm_val)
         return physics
 
     elif modality == "MRI":
@@ -226,28 +202,16 @@ def inner_loss_func(w, theta, y, physics_op):
 # ==========================================
 #  5. NORMALIZATION UTILITY
 # ==========================================
-# def robust_normalize(x):
-#     """Percentile-based normalization to [0, 1]."""
-#     b = x.shape[0]
-#     x_flat = x.view(b, -1)
-#     val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
-#     val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
-#     x = torch.clamp(x, val_min, val_max)
-#     denom = val_max - val_min
-#     denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
-#     return (x - val_min) / denom
-
-
 def robust_normalize(x):
-    """
-    Z-score normalization: (x - mean) / std.
-    This is standard for neural networks and robust to scaling shifts.
-    """
-    # Calculate mean and std per image in the batch
-    mean = x.flatten(1).mean(1).view(-1, 1, 1, 1)
-    std = x.flatten(1).std(1).view(-1, 1, 1, 1)
+    """Fixed-range normalization to [0, 1].
     
-    # Avoid division by zero
-    std = torch.where(std > 1e-7, std, torch.ones_like(std))
+    MSDDataset already windows CT data to [0, 1] (clip to [-150, 250]
+    then scale). The true signal is always in [0, 1] — FBP reconstruction
+    only adds noise/artifacts OUTSIDE this range.
     
-    return (x - mean) / std
+    Clamping to [0, 1] removes noise while preserving the signal structure,
+    so both clean images and FBP reconstructions have the same distribution
+    (mean ~0.14, same spatial structure). This prevents the domain shift
+    that adaptive percentile normalization causes (FBP mean 0.14 -> 0.51).
+    """
+    return x.clamp(0.0, 1.0)
