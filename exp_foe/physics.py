@@ -203,15 +203,21 @@ def inner_loss_func(w, theta, y, physics_op):
 #  5. NORMALIZATION UTILITY
 # ==========================================
 def robust_normalize(x):
-    """Fixed-range normalization to [0, 1].
+    """Percentile-based normalization to [0, 1].
     
-    MSDDataset already windows CT data to [0, 1] (clip to [-150, 250]
-    then scale). The true signal is always in [0, 1] — FBP reconstruction
-    only adds noise/artifacts OUTSIDE this range.
-    
-    Clamping to [0, 1] removes noise while preserving the signal structure,
-    so both clean images and FBP reconstructions have the same distribution
-    (mean ~0.14, same spatial structure). This prevents the domain shift
-    that adaptive percentile normalization causes (FBP mean 0.14 -> 0.51).
+    This is essential for domain invariance: both clean images and
+    FBP reconstructions are mapped to the same [0,1] range, so the
+    U-Net sees consistent input distributions across all phases.
     """
-    return x.clamp(0.0, 1.0)
+    b = x.shape[0]
+    x_flat = x.view(b, -1)
+    
+    val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
+    val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
+    
+    x = torch.clamp(x, val_min, val_max)
+    
+    denom = val_max - val_min
+    denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
+    
+    return (x - val_min) / denom
