@@ -97,16 +97,31 @@ def inner_loss_func(w, theta, y, physics_op):
 # ==========================================
 #  3. NORMALIZATION UTILITY
 # ==========================================
+# def robust_normalize(x):
+#     b = x.shape[0]
+#     x_flat = x.view(b, -1)
+    
+#     val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
+#     val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
+    
+#     x = torch.clamp(x, val_min, val_max)
+    
+#     denom = val_max - val_min
+#     denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
+    
+#     return (x - val_min) / denom
+
+
 def robust_normalize(x):
-    b = x.shape[0]
-    x_flat = x.view(b, -1)
+    """
+    Z-score normalization: (x - mean) / std.
+    This is standard for neural networks and robust to scaling shifts.
+    """
+    # Calculate mean and std per image in the batch
+    mean = x.flatten(1).mean(1).view(-1, 1, 1, 1)
+    std = x.flatten(1).std(1).view(-1, 1, 1, 1)
     
-    val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
-    val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
+    # Avoid division by zero
+    std = torch.where(std > 1e-7, std, torch.ones_like(std))
     
-    x = torch.clamp(x, val_min, val_max)
-    
-    denom = val_max - val_min
-    denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
-    
-    return (x - val_min) / denom
+    return (x - mean) / std

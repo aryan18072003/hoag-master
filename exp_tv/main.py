@@ -44,6 +44,7 @@ class Config:
     INNER_LR = 0.02      # Adam learning rate for inner solver
     
     # --- OUTER OPTIMIZATION SETTINGS ---
+    EPOCH_CLEAN=20
     EPOCHS = 15
     LR_UNET = 1e-3       # Adam lr for U-Net weights
     LR_THETA = 1e-3      # Adam lr for hyperparameters θ
@@ -187,7 +188,7 @@ def run_experiment():
 
     opt = torch.optim.Adam(model_upper.parameters(), lr=Config.LR_UNET)
     
-    for ep in range(Config.EPOCHS):
+    for ep in range(Config.EPOCH_CLEAN):
         model_upper.train()
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
@@ -214,15 +215,14 @@ def run_experiment():
     print(f" -> Final Lower Bound (Noisy): {results['Lower Bound']:.4f}")
 
     # ====================================================================
-    # PHASE 3: APPROACH 1 — HOAG: Optimize θ Only (Fixed U-Net)
+    # PHASE 3: APPROACH 1 — HOAG: Optimize theta Only (Fixed U-Net)
     # ====================================================================
     print("\n--- PHASE 3: Approach 1 (HOAG — Optimizing Theta Only) ---")
     
-    # Load the clean model and FREEZE all weights
-    # This is the "fixed critic" — we only optimize the physics parameters
     model_fixed = UNet().to(Config.DEVICE)
     model_fixed.load_state_dict(torch.load(ckpt_path)) 
-    model_fixed.train()  # Keep in train mode for BatchNorm statistics
+    #model_fixed.train()
+    model_fixed.eval()
     for p in model_fixed.parameters():
         p.requires_grad = False  # Freeze all U-Net weights
     
@@ -283,7 +283,7 @@ def run_experiment():
     print(f" -> Final Approach 1 Score: {results['Approach 1']:.4f}")
 
     # ====================================================================
-    # PHASE 4: APPROACH 2 — HOAG Joint Learning (θ + U-Net)
+    # PHASE 4: APPROACH 2 — HOAG Joint Learning (theta + U-Net)
     # ====================================================================
     print("\n--- PHASE 4: Approach 2 (Joint Learning — Theta + U-Net) ---")
     

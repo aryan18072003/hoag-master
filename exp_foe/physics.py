@@ -10,7 +10,7 @@ import deepinv as dinv
 # ==========================================
 NUM_EXPERTS = 5       # J: number of expert filters (paper: 10)
 FILTER_SIZE = 5       # K: spatial filter size (paper: 7)
-IN_CHANNELS = 2       # C: input channels (paper: 3 for RGB, 2 for CT complex)
+IN_CHANNELS = 1      # C: input channels 
 
 N_SCALAR_PARAMS = 1 + NUM_EXPERTS + NUM_EXPERTS   # 1 + J + J = 11
 N_FILTER_PARAMS = NUM_EXPERTS * IN_CHANNELS * FILTER_SIZE * FILTER_SIZE  # 5*2*25 = 250
@@ -91,20 +91,10 @@ def get_physics_operator(img_size, acceleration, center_frac, device, modality="
 
 
 # ==========================================
-#  2. θ PARSING — Matches paper layout
+#  2. theta PARSING
 # ==========================================
 def parse_theta(theta):
-    """
-    Parse flat θ vector into the four FoE components from the paper.
 
-    θ = [θ₀, θ₁..θⱼ, θ_{J+1}..θ_{2J}, c₁_flat, ..., cⱼ_flat]
-
-    Returns:
-        global_weight:   scalar θ₀
-        filter_weights:  tensor (J,) — per-filter log-weights θⱼ
-        smoothing_params: tensor (J,) — smoothing log-params (ν_j = exp(θ_{J+j}))
-        filters:         tensor (J, C, K, K) — conv kernels cⱼ
-    """
     idx = 0
     global_weight = theta[idx]
     idx += 1
@@ -207,7 +197,7 @@ def inner_loss_func(w, theta, y, physics_op):
 
     # --- FIELD OF EXPERTS REGULARIZATION  ---
     #
-    # R_θ(w) = e^{θ₀} · Σⱼ e^{θⱼ} · ||cⱼ * w||_{ν_j}
+    # R_θ(w) = e^{θ} · Σⱼ e^{θⱼ} · ||cⱼ * w||_{ν_j}
     #
     # where ||x||_ν = mean(√(xᵢ² + ν²) - ν)   [smoothed 1-norm]
     #
@@ -236,13 +226,28 @@ def inner_loss_func(w, theta, y, physics_op):
 # ==========================================
 #  5. NORMALIZATION UTILITY
 # ==========================================
+# def robust_normalize(x):
+#     """Percentile-based normalization to [0, 1]."""
+#     b = x.shape[0]
+#     x_flat = x.view(b, -1)
+#     val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
+#     val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
+#     x = torch.clamp(x, val_min, val_max)
+#     denom = val_max - val_min
+#     denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
+#     return (x - val_min) / denom
+
+
 def robust_normalize(x):
-    """Percentile-based normalization to [0, 1]."""
-    b = x.shape[0]
-    x_flat = x.view(b, -1)
-    val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
-    val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
-    x = torch.clamp(x, val_min, val_max)
-    denom = val_max - val_min
-    denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
-    return (x - val_min) / denom
+    """
+    Z-score normalization: (x - mean) / std.
+    This is standard for neural networks and robust to scaling shifts.
+    """
+    # Calculate mean and std per image in the batch
+    mean = x.flatten(1).mean(1).view(-1, 1, 1, 1)
+    std = x.flatten(1).std(1).view(-1, 1, 1, 1)
+    
+    # Avoid division by zero
+    std = torch.where(std > 1e-7, std, torch.ones_like(std))
+    
+    return (x - mean) / std

@@ -36,7 +36,7 @@ class Config:
     BATCH_SIZE = 4
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
-    ACCEL = 16
+    ACCEL = 8
     NOISE_SIGMA = 0.1
     CENTER_FRAC = 0.08
     
@@ -142,15 +142,6 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
 #        3. θ CLAMPING FOR FoE
 # ==========================================
 def clamp_theta(theta):
-    """
-    Project θ to valid range for paper's FoE.
-    
-    Clamping:
-        - (global weight): [-6, 4]     (exp range: [0.002, 54.6])
-        - (filter weights): [-6, 4]     (exp range: [0.002, 54.6])
-        - (smoothing): [-8, 2]           (exp range: [0.0003, 7.4])
-        - Filter coefficients: NOT clamped  
-    """
     with torch.no_grad():
         # Global weight
         theta[0].clamp_(-6.0, 4.0)
@@ -246,7 +237,8 @@ def run_experiment():
     
     model_fixed = UNet().to(Config.DEVICE)
     model_fixed.load_state_dict(torch.load(ckpt_path)) 
-    model_fixed.train()
+    #model_fixed.train()
+    model_fixed.eval()
     for p in model_fixed.parameters():
         p.requires_grad = False
     
