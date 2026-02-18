@@ -2,6 +2,7 @@ import os
 import glob
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 import nibabel as nib
 from PIL import Image
@@ -40,7 +41,6 @@ class MSDDataset(Dataset):
             try:
                 nii_lbl = nib.load(lbl_p)
                 data_lbl = nib.as_closest_canonical(nii_lbl).get_fdata()
-                #nii_lbl contains the metadata
                 for i in range(data_lbl.shape[2]):
                     if subset_size and count >= subset_size: break
                     if np.max(data_lbl[:,:,i]) > 0: 
@@ -59,21 +59,15 @@ class MSDDataset(Dataset):
         
         img = nib.as_closest_canonical(nib.load(img_p)).dataobj[..., s_idx]
         lbl = nib.as_closest_canonical(nib.load(lbl_p)).dataobj[..., s_idx]
-        # img and lbl are arrays
-        if self.modality == "CT":
-            img = np.clip(img, -150, 250)
-            img = (img - (-150)) / (250 - (-150))
-        else:
-            p1 = np.percentile(img, 1)
-            p99 = np.percentile(img, 99)
-            img = np.clip(img, p1, p99)
-            img = (img - p1) / (p99 - p1 + 1e-8)
 
-        img_pil = Image.fromarray((img * 255).astype(np.uint8)).resize((self.img_size, self.img_size), Image.BILINEAR)
+        # Raw image: no CT windowing, no [0,1] scaling — keep original HU values
+        img_t = torch.from_numpy(np.array(img, dtype=np.float32)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+        img_t = F.interpolate(img_t, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
+        img_t = img_t.squeeze(0)  # (1, img_size, img_size)
+
+        # Label: binary mask, use nearest interpolation
         lbl_pil = Image.fromarray(((lbl > 0) * 255).astype(np.uint8)).resize((self.img_size, self.img_size), Image.NEAREST)
-        # nearest because val of each pixel of label can 0/1 not 0.5 or something else
-        
-        img_np = np.array(img_pil) / 255.0
         lbl_np = np.array(lbl_pil) / 255.0
+        lbl_t = torch.from_numpy(lbl_np).float().unsqueeze(0)  # (1, img_size, img_size)
         
-        return torch.from_numpy(img_np).float().unsqueeze(0), torch.from_numpy(lbl_np).float().unsqueeze(0)
+        return img_t, lbl_t

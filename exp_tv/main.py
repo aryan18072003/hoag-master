@@ -37,29 +37,32 @@ class Config:
     BATCH_SIZE = 4
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
-    ACCEL = 16         # 16x Acceleration -> only 180/16 = 11 projection views
-    NOISE_SIGMA = 0.1  # 10% Gaussian noise on sinogram
+    ACCEL = 6         
+    NOISE_SIGMA = 0.5  # 10% Gaussian noise on sinogram
     CENTER_FRAC = 0.08
     
     # --- INNER OPTIMIZATION SETTINGS ---
-    INNER_STEPS = 100    # Max inner optimization steps
-    INNER_LR = 0.02      # Adam learning rate for inner solver
+    INNER_STEPS = 300    # More steps for convergence (was 100)
+    INNER_LR = 0.1       # Faster convergence (was 0.02)
     
     # --- OUTER OPTIMIZATION SETTINGS ---
     EPOCH_CLEAN = 20
     EPOCHS = 15
     LR_UNET = 5e-3       # Bug #4 fix: increased from 1e-3
-    LR_THETA = 0.01       # Bug #4 fix: increased from 1e-3 (2-dim theta, needs larger steps)
+    LR_THETA = 0.01       # Bug #4 fix: increased from 1e-3 
     
     # --- HOAG-SPECIFIC SETTINGS ---
     HOAG_EPSILON_TOL_INIT = 1e-3
     HOAG_TOLERANCE_DECREASE = 'exponential'
     HOAG_DECREASE_FACTOR = 0.9
-    HOAG_CG_MAX_ITER = 20
+    HOAG_CG_MAX_ITER = 50  # More accurate implicit gradients (was 20)
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+def norm(img):
+    img = torch.clamp(img, min=-150, max=250)
+    img = (img + 150) / 400.0
+    return img
 # ==========================================
 #        2. HELPER FUNCTIONS
 # ==========================================
@@ -103,7 +106,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
         
         # --- MODE 1: CLEAN (Upper Bound) ---
         if mode == "clean":
-            x_in = robust_normalize(img)
+            x_in = norm(img)
         
         # --- MODE 2: NOISY (Lower Bound) ---
         elif mode == "noisy":
@@ -113,7 +116,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
             with torch.no_grad():
                 x_recon = physics_op.A_dagger(y)
                 
-            x_in = robust_normalize(x_recon)
+            x_in = norm(x_recon)
 
         # --- MODE 3: HOAG (Optimized Reconstruction) ---
         elif mode == "hoag":
@@ -131,15 +134,16 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
                     loss = inner_loss_func(w, theta, y, physics_op)
                     loss.backward()
                     optimizer_inner.step()
-                    with torch.no_grad(): w.clamp_(0.0, 1.0)
             x_recon = w.detach()
             
-            x_in = robust_normalize(x_recon)
+            x_in = norm(x_recon)
 
         # Predict segmentation mask
         with torch.no_grad():
             pred = (model(x_in) > 0.5).float()
-            dice_score += (2. * (pred * mask).sum()) / (pred.sum() + mask.sum() + 1e-8)
+            intersection = (pred * mask).sum()
+            union = pred.sum() + mask.sum()
+            dice_score += (2. * intersection + 1e-6) / (union + 1e-6)
             
     return dice_score.item() / len(val_loader)
 
@@ -182,7 +186,7 @@ def run_experiment():
     # ====================================================================
     physics = get_physics_operator(Config.IMG_SIZE, Config.ACCEL, Config.CENTER_FRAC, Config.DEVICE, modality=Config.MODALITY)
     
-    loss_fn = DiceBCELoss()
+    loss_fn = torch.nn.BCELoss()
     results = {}
     dummy_theta = torch.tensor([-10.0, -10.0])  # ~zero regularization for baselines
     
@@ -205,8 +209,7 @@ def run_experiment():
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
-            x_in = robust_normalize(img)
-            
+            x_in = norm(img)
             opt.zero_grad()
             pred = model_upper(x_in)
             loss = loss_fn(pred, mask)
@@ -235,10 +238,10 @@ def run_experiment():
     model_fixed.load_state_dict(torch.load(ckpt_path)) 
     model_fixed.eval()
     for p in model_fixed.parameters():
-        p.requires_grad = False  # Freeze all U-Net weights
+        p.requires_grad = False
     
-    # Initialize theta in log-space:
-    theta = torch.tensor([-4.6, -5.0], device=Config.DEVICE).requires_grad_(True)
+    # Initialize theta in log-space (stronger init for mean-based fidelity):
+    theta = torch.tensor([-3.0, -4.0], device=Config.DEVICE).requires_grad_(True)
     
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
@@ -343,7 +346,7 @@ def run_experiment():
             # STEP B: Update U-Net Weights (Standard Backprop)
             # ============================================================
             w_fixed = w_star.detach().clone().requires_grad_(False)
-            x_in = robust_normalize(w_fixed)
+            x_in = norm(w_fixed)
             
             model_joint.train()
             opt_model.zero_grad()

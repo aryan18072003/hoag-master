@@ -23,7 +23,7 @@ def get_physics_operator(img_size, acceleration, center_frac, device, modality="
             img_width=img_size,
             circle=False,
             device=device,
-            normalize=True    # DeepInv handles operator normalization internally
+            normalize=True   
         )
 
         return physics
@@ -53,10 +53,25 @@ def get_physics_operator(img_size, acceleration, center_frac, device, modality="
 
 
 # ==========================================
-#  2. INNER LOSS FUNCTION (h in HOAG)
+#  2a. REGULARIZER ONLY (for exact HVP)
+# ==========================================
+def regularizer_only(w, theta):
+    
+    reg_weight = torch.exp(theta[0].clamp(max=1.0))
+    eps = torch.exp(theta[1].clamp(min=-12.0))
+    
+    dx = torch.roll(w, 1, 2) - w
+    dy = torch.roll(w, 1, 3) - w
+    tv_penalty = torch.mean(torch.sqrt(dx**2 + dy**2 + eps))
+    
+    return reg_weight * tv_penalty
+
+
+# ==========================================
+#  2b. INNER LOSS FUNCTION (h in HOAG)
 # ==========================================
 def inner_loss_func(w, theta, y, physics_op):
-    # --- DATA FIDELITY TERM (Bug #3 fix: use mean, not sum) ---
+    # --- DATA FIDELITY TERM ---
     residual = y - physics_op(w)
     fid = torch.mean(residual ** 2)
     
@@ -77,12 +92,7 @@ def inner_loss_func(w, theta, y, physics_op):
 #  3. NORMALIZATION UTILITY
 # ==========================================
 def robust_normalize(x):
-    """Percentile-based normalization to [0, 1].
-    
-    This is essential for domain invariance: both clean images and
-    FBP reconstructions are mapped to the same [0,1] range, so the
-    U-Net sees consistent input distributions across all phases.
-    """
+
     b = x.shape[0]
     x_flat = x.view(b, -1)
     

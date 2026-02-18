@@ -36,8 +36,8 @@ class Config:
     BATCH_SIZE = 4
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
-    ACCEL = 8
-    NOISE_SIGMA = 0.1
+    ACCEL = 6
+    NOISE_SIGMA = 0.8
     CENTER_FRAC = 0.08
     
     # --- INNER OPTIMIZATION SETTINGS ---
@@ -65,6 +65,10 @@ class Config:
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def norm(img):
+    img = torch.clamp(img, min=-150, max=250)
+    img = (img + 150) / 400.0
+    return img
 
 # ==========================================
 #        2. HELPER FUNCTIONS
@@ -103,14 +107,14 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
         img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
         
         if mode == "clean":
-            x_in = robust_normalize(img)
+            x_in = norm(img)
         
         elif mode == "noisy":
             y_clean = physics_op(img)
             y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             with torch.no_grad():
                 x_recon = physics_op.A_dagger(y)
-            x_in = robust_normalize(x_recon)
+            x_in = norm(x_recon)
 
         elif mode == "hoag":
             y_clean = physics_op(img)
@@ -133,7 +137,9 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
 
         with torch.no_grad():
             pred = (model(x_in) > 0.5).float()
-            dice_score += (2. * (pred * mask).sum()) / (pred.sum() + mask.sum() + 1e-8)
+            intersection = (pred * mask).sum()
+            union = pred.sum() + mask.sum()
+            dice_score += (2. * intersection + 1e-6) / (union + 1e-6)
             
     return dice_score.item() / len(val_loader)
 
@@ -210,7 +216,7 @@ def run_experiment():
         model_upper.train()
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
-            x_in = robust_normalize(img)
+            x_in = norm(img)
             opt.zero_grad()
             pred = model_upper(x_in)
             loss = loss_fn(pred, mask)
