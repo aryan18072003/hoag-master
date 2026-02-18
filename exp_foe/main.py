@@ -37,25 +37,25 @@ class Config:
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
     ACCEL = 6
-    NOISE_SIGMA = 0.8
+    NOISE_SIGMA = 0.5  
     CENTER_FRAC = 0.08
     
     # --- INNER OPTIMIZATION SETTINGS ---
-    INNER_STEPS = 100
-    INNER_LR = 0.02
+    INNER_STEPS = 500   
+    INNER_LR = 0.1     
     
     # --- OUTER OPTIMIZATION SETTINGS ---
-    EPOCHS_CLEAN = 50     # Phase 1: enough to fully converge on clean data
-    EPOCHS_HOAG = 15      # Phase 3: HOAG theta optimization
-    EPOCHS_JOINT = 10      # Phase 4: fine-tuning 
-    LR_UNET = 5e-3       # Bug #4 fix: increased from 1e-3
-    LR_THETA = 0.05       # Bug #4 fix: increased from 1e-3 (136-dim theta needs bigger steps)
+    EPOCHS_CLEAN = 50
+    EPOCHS_HOAG = 25               
+    EPOCHS_JOINT = 25      
+    LR_UNET = 5e-3
+    LR_THETA = 0.05           
     
     # --- HOAG-SPECIFIC SETTINGS ---
     HOAG_EPSILON_TOL_INIT = 1e-3
     HOAG_TOLERANCE_DECREASE = 'exponential'
-    HOAG_DECREASE_FACTOR = 0.995 
-    HOAG_CG_MAX_ITER = 20
+    HOAG_DECREASE_FACTOR = 0.9
+    HOAG_CG_MAX_ITER = 50  
     
     # --- FoE-SPECIFIC SETTINGS  ---
     NUM_EXPERTS = NUM_EXPERTS        # J=5 expert filters
@@ -123,6 +123,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
             w = physics_op.A_dagger(y).detach().clone()
             w.requires_grad_(True)
             optimizer_inner = torch.optim.Adam([w], lr=Config.INNER_LR)
+            scheduler_inner = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_inner, T_max=steps, eta_min=Config.INNER_LR * 0.01)
             
             with torch.enable_grad():
                 for _ in range(steps):
@@ -130,10 +131,10 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
                     loss = inner_loss_func(w, theta, y, physics_op)
                     loss.backward()
                     optimizer_inner.step()
-                    with torch.no_grad(): w.clamp_(0.0, 1.0)
+                    scheduler_inner.step()
             x_recon = w.detach()
             
-            x_in = robust_normalize(x_recon)
+            x_in = norm(x_recon)
 
         with torch.no_grad():
             pred = (model(x_in) > 0.5).float()
@@ -306,11 +307,11 @@ def run_experiment():
     print("\n--- PHASE 4: Approach 2 (Joint Learning — FoE Theta + U-Net) ---")
     
     model_joint = UNet().to(Config.DEVICE)
-    model_joint.load_state_dict(torch.load(ckpt_path))
+    #model_joint.load_state_dict(torch.load(ckpt_path))
     opt_model = torch.optim.Adam(model_joint.parameters(), lr=Config.LR_UNET)
     
-    # Warm-start theta from Phase 3
-    theta = torch.load(path_hoag)['theta'].to(Config.DEVICE).requires_grad_(True)
+    #theta = torch.load(path_hoag)['theta'].to(Config.DEVICE).requires_grad_(True)
+    theta = initialize_theta(Config.DEVICE).requires_grad_(True)
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
     hoag_state_joint = HOAGState(
@@ -344,7 +345,7 @@ def run_experiment():
             
             # STEP B: Update U-Net Weights (Standard Backprop)
             w_fixed = w_star.detach().clone().requires_grad_(False)
-            x_in = robust_normalize(w_fixed)
+            x_in = norm(w_fixed)
             
             model_joint.train()
             opt_model.zero_grad()

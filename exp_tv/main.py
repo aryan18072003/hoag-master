@@ -38,24 +38,24 @@ class Config:
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
     ACCEL = 6         
-    NOISE_SIGMA = 0.5  # 10% Gaussian noise on sinogram
+    NOISE_SIGMA = 0.5  
     CENTER_FRAC = 0.08
     
     # --- INNER OPTIMIZATION SETTINGS ---
-    INNER_STEPS = 300    # More steps for convergence (was 100)
-    INNER_LR = 0.1       # Faster convergence (was 0.02)
+    INNER_STEPS = 500   
+    INNER_LR = 0.1     
     
     # --- OUTER OPTIMIZATION SETTINGS ---
-    EPOCH_CLEAN = 20
-    EPOCHS = 15
-    LR_UNET = 5e-3       # Bug #4 fix: increased from 1e-3
-    LR_THETA = 0.01       # Bug #4 fix: increased from 1e-3 
+    EPOCH_CLEAN = 50
+    EPOCHS = 25               
+    LR_UNET = 5e-3
+    LR_THETA = 0.05           
     
     # --- HOAG-SPECIFIC SETTINGS ---
     HOAG_EPSILON_TOL_INIT = 1e-3
     HOAG_TOLERANCE_DECREASE = 'exponential'
     HOAG_DECREASE_FACTOR = 0.9
-    HOAG_CG_MAX_ITER = 50  # More accurate implicit gradients (was 20)
+    HOAG_CG_MAX_ITER = 50  
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -84,7 +84,7 @@ class DiceBCELoss(nn.Module):
         dice = (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)  
         dice_loss = 1 - dice
         
-        # Combine: 90% BCE + 10% Dice is standard weighting
+        # Combine:
         return 0.9 * bce_loss + 0.1 * dice_loss
 
 
@@ -127,6 +127,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
             w = physics_op.A_dagger(y).detach().clone()
             w.requires_grad_(True)
             optimizer_inner = torch.optim.Adam([w], lr=Config.INNER_LR)
+            scheduler_inner = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_inner, T_max=steps, eta_min=Config.INNER_LR * 0.01)
             
             with torch.enable_grad():
                 for _ in range(steps):
@@ -134,6 +135,7 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
                     loss = inner_loss_func(w, theta, y, physics_op)
                     loss.backward()
                     optimizer_inner.step()
+                    scheduler_inner.step()     
             x_recon = w.detach()
             
             x_in = norm(x_recon)
@@ -152,7 +154,6 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
 #        3. MAIN EXPERIMENT
 # ==========================================
 def run_experiment():
-    # Bug #6 fix: Deterministic seeding for reproducibility
     SEED = 42
     random.seed(SEED)
     np.random.seed(SEED)
@@ -193,8 +194,6 @@ def run_experiment():
     # ====================================================================
     # PHASE 1: UPPER BOUND — Train U-Net on Clean Ground Truth
     # ====================================================================
-    # This establishes the theoretical maximum performance.
-    # No physics simulation involved — U-Net sees perfect images.
     print("\n--- PHASE 1: Upper Bound (Training on Clean Ground Truth) ---")
     model_upper = UNet().to(Config.DEVICE)
     ckpt_path = os.path.join(Config.OUTPUT_DIR, "model_upper_clean.pth")
@@ -240,8 +239,7 @@ def run_experiment():
     for p in model_fixed.parameters():
         p.requires_grad = False
     
-    # Initialize theta in log-space (stronger init for mean-based fidelity):
-    theta = torch.tensor([-3.0, -4.0], device=Config.DEVICE).requires_grad_(True)
+    theta = torch.tensor([-1.0, -4.0], device=Config.DEVICE).requires_grad_(True)
     
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
@@ -284,7 +282,7 @@ def run_experiment():
             opt_theta.step()
             
             with torch.no_grad():
-                theta[0].clamp_(-9.0, -2.0)
+                theta[0].clamp_(-9.0, 1.0)
                 theta[1].clamp_(-12.0, -2.0)
             
             print_progress(ep, i, len(train_loader), val_loss_value, theta, "Appr 1 (HOAG)")
@@ -300,16 +298,14 @@ def run_experiment():
     # ====================================================================
     print("\n--- PHASE 4: Approach 2 (Joint Learning — Theta + U-Net) ---")
     
-    # Start from the clean model (Phase 1 weights) — fine-tune jointly
     model_joint = UNet().to(Config.DEVICE)
-    model_joint.load_state_dict(torch.load(ckpt_path))
+    #model_joint.load_state_dict(torch.load(ckpt_path))
     opt_model = torch.optim.Adam(model_joint.parameters(), lr=Config.LR_UNET)
     
-    # Start from the best theta found in Phase 3 (warm-start)
-    theta = torch.load(path_hoag)['theta'].to(Config.DEVICE).requires_grad_(True)
+    #theta = torch.load(path_hoag)['theta'].to(Config.DEVICE).requires_grad_(True)
+    theta = torch.tensor([-1.0, -4.0], device=Config.DEVICE).requires_grad_(True)
     opt_theta = torch.optim.Adam([theta], lr=Config.LR_THETA)
     
-    # Fresh HOAG state for Phase 4
     hoag_state_joint = HOAGState(
         epsilon_tol_init=Config.HOAG_EPSILON_TOL_INIT,
         tolerance_decrease=Config.HOAG_TOLERANCE_DECREASE,
@@ -379,7 +375,7 @@ def run_experiment():
             
             # Project theta to valid range
             with torch.no_grad():
-                theta[0].clamp_(-9.0, -2.0)
+                theta[0].clamp_(-9.0, 1.0)
                 theta[1].clamp_(-12.0, -2.0)
             
             print_progress(ep, i, len(train_loader), val_loss_value, theta, "Appr 2 (Joint)")

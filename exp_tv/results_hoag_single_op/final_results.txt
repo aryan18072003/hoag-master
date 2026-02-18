@@ -2,9 +2,9 @@
 Task: Task09_Spleen
 Accel: 6x | Noise: 0.5
 HOAG: tol_init=0.001, schedule=exponential, decay=0.9
-Epochs: 15 | Inner Steps: 300
+Epochs: 25 | Inner Steps: 500
 
-1. Upper Bound (Clean):      0.9058
-2. Lower Bound (Noisy):      0.3299
-3. Approach 1 (HOAG theta):  0.3585
-4. Approach 2 (HOAG joint):  0.9241
+1. Upper Bound (Clean):      0.9234
+2. Lower Bound (Noisy):      0.3652
+3. Approach 1 (HOAG theta):  0.3720
+4. Approach 2 (HOAG joint):  0.9097

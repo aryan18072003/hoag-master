@@ -4,37 +4,32 @@ import torch.autograd as autograd
 
 # ==========================================
 #  1. HESSIAN-VECTOR PRODUCT (HVP)
-#     via Finite Differences
+#     via Exact Decomposition
 # ==========================================
-def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_eps=1e-4):
-    """
-    Finite Difference HVP: H*v ~= (grad_h(w + eps*v) - grad_h(w - eps*v)) / (2*eps)
+def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_eps=None):
+
+    v_detached = v.detach()
     
-    This avoids 'second order derivative' errors in complex physics operators
-    by strictly using first-order gradients.
-    """
-    # Ensure w_star and v are detached and ready
-    w = w_star.detach()
-    v = v.detach()
+    # --- Term 1: Data fidelity Hessian-vector product ---
+    # H_fid = (2/n) * AᵀA  where n = y.numel()
+    # This is the exact Hessian of mean((y - Aw)²) w.r.t. w
+    with torch.no_grad():
+        Av = physics_op.A(v_detached)
+        AtAv = physics_op.A_adjoint(Av)
+    n = y.numel()
+    term1 = (2.0 / n) * AtAv
     
-    # 1. Create Perturbed Inputs (w + eps*v) and (w - eps*v)
-    w_plus = (w + fd_eps * v).requires_grad_(True)
-    w_minus = (w - fd_eps * v).requires_grad_(True)
-    
-    # 2. Compute Gradient at w_plus
+    # --- Term 2: Regularizer Hessian-vector product ---
+    # ∇²_ww R_θ(w*) · v  via autograd
+    from physics import regularizer_only
+    w_for_reg = w_star.detach().requires_grad_(True)
     with torch.enable_grad():
-        loss_plus = inner_loss_fn(w_plus, theta.detach(), y, physics_op)
-        grad_plus = torch.autograd.grad(loss_plus, w_plus, retain_graph=False)[0]
+        reg = regularizer_only(w_for_reg, theta.detach())
+        grad_reg = autograd.grad(reg, w_for_reg, create_graph=True)[0]
+        grad_dot_v = torch.sum(grad_reg * v_detached)
+        term2 = autograd.grad(grad_dot_v, w_for_reg, retain_graph=False)[0]
     
-    # 3. Compute Gradient at w_minus
-    with torch.enable_grad():
-        loss_minus = inner_loss_fn(w_minus, theta.detach(), y, physics_op)
-        grad_minus = torch.autograd.grad(loss_minus, w_minus, retain_graph=False)[0]
-        
-    # 4. Compute Finite Difference
-    Hv = (grad_plus - grad_minus) / (2 * fd_eps)
-    
-    return Hv.detach()
+    return (term1 + term2.detach()).detach()
 
 
 # ==========================================
@@ -43,7 +38,6 @@ def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_ep
 def conjugate_gradient(inner_loss_fn, w_star, theta, y, physics_op, b,
                        max_iter=10, tol=1e-4, warm_start=None):
 
-    # Bug #8 fix: Scale tolerance relative to ||b|| to avoid premature exit
     b_norm = b.detach().norm().item()
     scaled_tol = tol * max(b_norm, 1.0)
 
@@ -56,7 +50,7 @@ def conjugate_gradient(inner_loss_fn, w_star, theta, y, physics_op, b,
     # Initial residual: r = b - H*x
     if warm_start is not None:
         Ax = hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, x)
-        Ax = Ax + 1e-3 * x  # Tikhonov damping
+        Ax = Ax + 1e-3 * x 
         r = b.detach() - Ax
     else:
         r = b.detach().clone()
@@ -68,11 +62,10 @@ def conjugate_gradient(inner_loss_fn, w_star, theta, y, physics_op, b,
         # Check convergence: ||r|| < scaled_tol
         if torch.sqrt(rsold) < scaled_tol:
             break
-        
-        # Compute H*p using finite-difference HVP
+
         Ap = hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, p)
         
-        Ap = Ap + 1e-3 * p  # Tikhonov damping matches above
+        Ap = Ap + 1e-3 * p 
         
         pAp = torch.sum(p * Ap)
         if pAp.abs() < 1e-12:

@@ -60,7 +60,7 @@ class MSDDataset(Dataset):
         img = nib.as_closest_canonical(nib.load(img_p)).dataobj[..., s_idx]
         lbl = nib.as_closest_canonical(nib.load(lbl_p)).dataobj[..., s_idx]
 
-        # Raw image: no CT windowing, no [0,1] scaling — keep original HU values
+        # Raw image
         img_t = torch.from_numpy(np.array(img, dtype=np.float32)).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
         img_t = F.interpolate(img_t, size=(self.img_size, self.img_size), mode='bilinear', align_corners=False)
         img_t = img_t.squeeze(0)  # (1, img_size, img_size)

@@ -161,7 +161,25 @@ def initialize_theta(device):
 
 
 # ==========================================
-#  4. INNER LOSS (h in HOAG) 
+#  4a. REGULARIZER ONLY (for exact HVP)
+# ==========================================
+def regularizer_only(w, theta):
+    """Compute only the FoE regularization term R_θ(w), without data fidelity."""
+    global_weight, filter_weights, smoothing_params, filters = parse_theta(theta)
+    
+    foe_sum = torch.tensor(0.0, device=w.device)
+    for j in range(NUM_EXPERTS):
+        c_j = filters[j:j+1]
+        response = F.conv2d(w, c_j, padding=FILTER_SIZE // 2)
+        nu_j = torch.exp(smoothing_params[j].clamp(max=2.0))
+        smoothed_norm = torch.mean(torch.sqrt(response ** 2 + nu_j ** 2) - nu_j)
+        foe_sum = foe_sum + torch.exp(filter_weights[j].clamp(max=4.0)) * smoothed_norm
+    
+    return torch.exp(global_weight.clamp(max=4.0)) * foe_sum
+
+
+# ==========================================
+#  4b. INNER LOSS (h in HOAG) 
 # ==========================================
 def inner_loss_func(w, theta, y, physics_op):
 

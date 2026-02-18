@@ -56,6 +56,7 @@ def solve_inner_problem(w_init, theta, y, physics_op, inner_loss_fn,
     w.requires_grad_(True)
     
     optimizer = torch.optim.Adam([w], lr=lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_steps, eta_min=lr * 0.01)
     
     with torch.enable_grad():
         loss_init = inner_loss_fn(w, theta.detach(), y, physics_op)
@@ -77,6 +78,7 @@ def solve_inner_problem(w_init, theta, y, physics_op, inner_loss_fn,
         
         grad_norm = w.grad.norm().item()
         optimizer.step()
+        scheduler.step()
         
         n_steps += 1
         
