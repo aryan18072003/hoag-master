@@ -21,7 +21,7 @@ from hoag import HOAGState, hoag_step, solve_inner_problem
 # ==========================================
 class Config:
 
-    DATA_ROOT = "./"
+    DATA_ROOT = "../ct_data"
     TASK = "Task09_Spleen"
     OUTPUT_DIR = "./results_hoag_foe"
     MODALITY = "CT"

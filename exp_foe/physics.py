@@ -59,7 +59,7 @@ def get_physics_operator(img_size, acceleration, center_frac, device, modality="
             mask[:, :, chosen] = 1.0
 
         mask = mask.to(device)
-        physics = dinv.physics.MRI(mask=mask, img_size=(1, img_size, img_size), device=device)
+        physics = dinv.physics.MRI(mask=mask, img_size=(1, img_size, img_size), device=device,normalize=True)
         return physics
 
     else:
