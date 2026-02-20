@@ -22,7 +22,7 @@ class Config:
     Central configuration for the experiment.
     Physics settings simulate a fast, low-dose CT scan (sparse-view + noise).
     """
-    DATA_ROOT = "./"
+    DATA_ROOT = "../ct_data"
     TASK = "Task09_Spleen"
     OUTPUT_DIR = "./results_hoag_single_op"
     MODALITY = "CT"
