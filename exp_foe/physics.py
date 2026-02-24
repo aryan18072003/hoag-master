@@ -167,10 +167,15 @@ def regularizer_only(w, theta):
     """Compute only the FoE regularization term R_θ(w), without data fidelity."""
     global_weight, filter_weights, smoothing_params, filters = parse_theta(theta)
     
+    # For MRI (2-channel complex), apply FoE to magnitude (1-channel)
+    w_reg = w
+    if w.shape[1] == 2:
+        w_reg = torch.sqrt(w[:, 0:1, :, :]**2 + w[:, 1:2, :, :]**2)
+    
     foe_sum = torch.tensor(0.0, device=w.device)
     for j in range(NUM_EXPERTS):
         c_j = filters[j:j+1]
-        response = F.conv2d(w, c_j, padding=FILTER_SIZE // 2)
+        response = F.conv2d(w_reg, c_j, padding=FILTER_SIZE // 2)
         nu_j = torch.exp(smoothing_params[j].clamp(max=2.0))
         smoothed_norm = torch.mean(torch.sqrt(response ** 2 + nu_j ** 2) - nu_j)
         foe_sum = foe_sum + torch.exp(filter_weights[j].clamp(max=4.0)) * smoothed_norm
@@ -189,6 +194,11 @@ def inner_loss_func(w, theta, y, physics_op):
     # --- PARSE θ ---
     global_weight, filter_weights, smoothing_params, filters = parse_theta(theta)
 
+    # For MRI (2-channel complex), apply FoE to magnitude (1-channel)
+    w_reg = w
+    if w.shape[1] == 2:
+        w_reg = torch.sqrt(w[:, 0:1, :, :]**2 + w[:, 1:2, :, :]**2)
+
     # --- FIELD OF EXPERTS REGULARIZATION  ---
     #
     # R_θ(w) = e^{θ} · Σⱼ e^{θⱼ} · ||cⱼ * w||_{ν_j}
@@ -200,7 +210,7 @@ def inner_loss_func(w, theta, y, physics_op):
     for j in range(NUM_EXPERTS):
         # Convolution: cⱼ * w  (multi-channel: cⱼ has shape (1, C, K, K))
         c_j = filters[j:j+1]  # shape: (1, C, K, K)
-        response = F.conv2d(w, c_j, padding=FILTER_SIZE // 2)  # (B, 1, H, W)
+        response = F.conv2d(w_reg, c_j, padding=FILTER_SIZE // 2)  # (B, 1, H, W)
 
         # Smoothing parameter: ν_j = exp(θ_{J+j}) — positive by construction
         nu_j = torch.exp(smoothing_params[j].clamp(max=2.0))
@@ -217,25 +227,3 @@ def inner_loss_func(w, theta, y, physics_op):
     return fid + foe_reg
 
 
-# ==========================================
-#  5. NORMALIZATION UTILITY
-# ==========================================
-def robust_normalize(x):
-    """Percentile-based normalization to [0, 1].
-    
-    This is essential for domain invariance: both clean images and
-    FBP reconstructions are mapped to the same [0,1] range, so the
-    U-Net sees consistent input distributions across all phases.
-    """
-    b = x.shape[0]
-    x_flat = x.view(b, -1)
-    
-    val_min = torch.quantile(x_flat, 0.01, dim=1).view(b, 1, 1, 1)
-    val_max = torch.quantile(x_flat, 0.99, dim=1).view(b, 1, 1, 1)
-    
-    x = torch.clamp(x, val_min, val_max)
-    
-    denom = val_max - val_min
-    denom = torch.where(denom > 1e-7, denom, torch.ones_like(denom))
-    
-    return (x - val_min) / denom

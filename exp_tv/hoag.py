@@ -6,6 +6,18 @@ def norm(img):
     img = torch.clamp(img, min=-150, max=250)
     img = (img + 150) / 400.0
     return img
+
+def norm_z_score(img):
+    mean = img.mean()
+    std = img.std()
+    
+    if std > 0:
+        img = (img - mean) / std
+    else:
+        img = torch.zeros_like(img)
+        
+    return img
+
 # ==========================================
 #  1. HOAG STATE
 # ==========================================
@@ -101,7 +113,7 @@ def solve_inner_problem(w_init, theta, y, physics_op, inner_loss_fn,
 # ==========================================
 def hoag_step(theta, y, physics_op, model, loss_fn, mask,
               inner_loss_fn, state, inner_lr=0.02, inner_steps=100,
-              cg_max_iter=20, verbose=0):
+              cg_max_iter=20, verbose=0, modality="CT"):
     
     w_init = physics_op.A_dagger(y).detach().clone()
     
@@ -116,7 +128,10 @@ def hoag_step(theta, y, physics_op, model, loss_fn, mask,
     
 
     w_star = w_star.detach().requires_grad_(True) 
-    x_in = norm(w_star)
+    if(modality=="CT"): x_in = norm(w_star)
+    elif(modality=="MRI"): 
+        magnitude = torch.sqrt(w_star[:, 0:1, :, :]**2 + w_star[:, 1:2, :, :]**2)
+        x_in = norm_z_score(magnitude)
     pred = model(x_in)
     val_loss = loss_fn(pred, mask)
     val_loss_value = val_loss.item()

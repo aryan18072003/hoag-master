@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, random_split
 
 from models import UNet
 from dataset import MSDDataset
-from physics import get_physics_operator, inner_loss_func, robust_normalize
+from physics import get_physics_operator, inner_loss_func
 
 from hoag import HOAGState, hoag_step, solve_inner_problem
 
@@ -18,14 +18,11 @@ from hoag import HOAGState, hoag_step, solve_inner_problem
 #        1. CONFIGURATION
 # ==========================================
 class Config:
-    """
-    Central configuration for the experiment.
-    Physics settings simulate a fast, low-dose CT scan (sparse-view + noise).
-    """
+
     DATA_ROOT = "../ct_data"
     TASK = "Task09_Spleen"
-    OUTPUT_DIR = "./results_hoag_single_op"
     MODALITY = "CT"
+    OUTPUT_DIR = f"./results_hoag_tv_{MODALITY}_{TASK}"
     
     # Dataset Splits
     SUBSET_SIZE = 100
@@ -37,7 +34,7 @@ class Config:
     BATCH_SIZE = 4
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
-    ACCEL = 6         
+    ACCEL = 6            # 6 for ct and for mri
     NOISE_SIGMA = 0.5  
     CENTER_FRAC = 0.08
     
@@ -63,6 +60,16 @@ def norm(img):
     img = torch.clamp(img, min=-150, max=250)
     img = (img + 150) / 400.0
     return img
+
+def norm_z_score(img):
+    mean = img.mean()
+    std = img.std()
+    if std > 0:
+        img = (img - mean) / std
+    else:
+        img = torch.zeros_like(img)
+    return img
+
 # ==========================================
 #        2. HELPER FUNCTIONS
 # ==========================================
@@ -97,7 +104,7 @@ def print_progress(epoch, batch, total_batches, loss, theta, info=""):
     sys.stdout.flush()
 
 
-def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
+def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean",modality="CT"):
     model.eval()
     dice_score = 0.0
     
@@ -106,39 +113,65 @@ def validate(model, val_loader, physics_op, theta=None, steps=0, mode="clean"):
         
         # --- MODE 1: CLEAN (Upper Bound) ---
         if mode == "clean":
-            x_in = norm(img)
+            if(modality=="CT"): x_in = norm(img)
+            elif(modality=="MRI"): x_in = norm_z_score(img)
         
         # --- MODE 2: NOISY (Lower Bound) ---
         elif mode == "noisy":
-            y_clean = physics_op(img)
-            y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+            if(modality=="CT"):
+                y_clean = physics_op(img)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+                with torch.no_grad():
+                    x_recon = physics_op.A_dagger(y)
+                    x_in = norm(x_recon)
+            elif(modality=="MRI"):
+                imaginary_part = torch.zeros_like(img)
+                complex_input = torch.cat([img, imaginary_part], dim=1)
+                y_clean = physics_op(complex_input)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+                with torch.no_grad():
+                    x_recon = physics_op.A_dagger(y)
+                    magnitude = torch.sqrt(x_recon[:, 0:1, :, :]**2 + x_recon[:, 1:2, :, :]**2)
+                    x_in = norm_z_score(magnitude)    
             
-            with torch.no_grad():
-                x_recon = physics_op.A_dagger(y)
-                
-            x_in = norm(x_recon)
 
         # --- MODE 3: HOAG (Optimized Reconstruction) ---
         elif mode == "hoag":
-            y_clean = physics_op(img)
-            y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
-            
-            # Solve inner problem with the HOAG-optimized theta
-            w = physics_op.A_dagger(y).detach().clone()
-            w.requires_grad_(True)
-            optimizer_inner = torch.optim.Adam([w], lr=Config.INNER_LR)
-            scheduler_inner = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_inner, T_max=steps, eta_min=Config.INNER_LR * 0.01)
-            
-            with torch.enable_grad():
-                for _ in range(steps):
-                    optimizer_inner.zero_grad()
-                    loss = inner_loss_func(w, theta, y, physics_op)
-                    loss.backward()
-                    optimizer_inner.step()
-                    scheduler_inner.step()     
-            x_recon = w.detach()
-            
-            x_in = norm(x_recon)
+            if(modality=="CT"):
+                y_clean = physics_op(img)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+                w = physics_op.A_dagger(y).detach().clone()
+                w.requires_grad_(True)
+                optimizer_inner = torch.optim.Adam([w], lr=Config.INNER_LR)
+                scheduler_inner = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_inner, T_max=steps, eta_min=Config.INNER_LR * 0.01)
+                with torch.enable_grad():
+                    for _ in range(steps):
+                        optimizer_inner.zero_grad()
+                        loss = inner_loss_func(w, theta, y, physics_op)
+                        loss.backward()
+                        optimizer_inner.step()
+                        scheduler_inner.step()     
+                x_recon = w.detach()
+                x_in = norm(x_recon)
+            elif(modality=="MRI"):
+                imaginary_part = torch.zeros_like(img)
+                complex_input = torch.cat([img, imaginary_part], dim=1)
+                y_clean = physics_op(complex_input)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+                w = physics_op.A_dagger(y).detach().clone()
+                w.requires_grad_(True)
+                optimizer_inner = torch.optim.Adam([w], lr=Config.INNER_LR)
+                scheduler_inner = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_inner, T_max=steps, eta_min=Config.INNER_LR * 0.01)
+                with torch.enable_grad():
+                    for _ in range(steps):
+                        optimizer_inner.zero_grad()
+                        loss = inner_loss_func(w, theta, y, physics_op)
+                        loss.backward()
+                        optimizer_inner.step()
+                        scheduler_inner.step()     
+                x_recon = w.detach()
+                magnitude = torch.sqrt(x_recon[:, 0:1, :, :]**2 + x_recon[:, 1:2, :, :]**2)
+                x_in = norm_z_score(magnitude)    
 
         # Predict segmentation mask
         with torch.no_grad():
@@ -208,7 +241,8 @@ def run_experiment():
         for i, (img, mask) in enumerate(train_loader):
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
-            x_in = norm(img)
+            if(Config.MODALITY=="CT"): x_in = norm(img)
+            elif(Config.MODALITY=="MRI"): x_in = norm_z_score(img)
             opt.zero_grad()
             pred = model_upper(x_in)
             loss = loss_fn(pred, mask)
@@ -218,14 +252,14 @@ def run_experiment():
             print_progress(ep, i, len(train_loader), loss.item(), dummy_theta, "Clean Training")
     print(""); torch.save(model_upper.state_dict(), ckpt_path)
 
-    results['Upper Bound'] = validate(model_upper, test_loader, physics, theta=dummy_theta, mode="clean")
+    results['Upper Bound'] = validate(model_upper, test_loader, physics, theta=dummy_theta, mode="clean", modality=Config.MODALITY)
     print(f" -> Final Upper Bound (Clean): {results['Upper Bound']:.4f}")
 
     # ====================================================================
     # PHASE 2: LOWER BOUND — Test Clean Model on Noisy Physics
     # ====================================================================
     print("\n--- PHASE 2: Lower Bound (Testing Clean Model on Noisy Physics) ---")
-    results['Lower Bound'] = validate(model_upper, test_loader, physics, theta=dummy_theta, mode="noisy")
+    results['Lower Bound'] = validate(model_upper, test_loader, physics, theta=dummy_theta, mode="noisy", modality=Config.MODALITY)
     print(f" -> Final Lower Bound (Noisy): {results['Lower Bound']:.4f}")
 
     # ====================================================================
@@ -257,9 +291,15 @@ def run_experiment():
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
             # Simulate Noisy Sparse-View CT Scan
-            y_clean = physics(img)
-            y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
-            
+            if(Config.MODALITY=="CT"):
+                y_clean = physics(img)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+            elif(Config.MODALITY=="MRI"):
+                imaginary_part = torch.zeros_like(img)
+                complex_input = torch.cat([img, imaginary_part], dim=1)
+                y_clean = physics(complex_input)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+    
             # HOAG STEP
             hyper_grad, val_loss_value, w_star = hoag_step(
                 theta=theta,
@@ -273,7 +313,8 @@ def run_experiment():
                 inner_lr=Config.INNER_LR,
                 inner_steps=Config.INNER_STEPS,
                 cg_max_iter=Config.HOAG_CG_MAX_ITER,
-                verbose=0
+                verbose=0,
+                modality=Config.MODALITY
             )
             
             # Update theta using Adam with the HOAG-computed hypergradient
@@ -290,7 +331,7 @@ def run_experiment():
         print(f"  [epsilon_tol: {hoag_state.epsilon_tol:.2e}]")
         torch.save({'theta': theta, 'hoag_state_epsilon': hoag_state.epsilon_tol}, path_hoag)
 
-    results['Approach 1'] = validate(model_fixed, test_loader, physics, theta, Config.INNER_STEPS, mode="hoag")
+    results['Approach 1'] = validate(model_fixed, test_loader, physics, theta, Config.INNER_STEPS, mode="hoag", modality=Config.MODALITY)
     print(f" -> Final Approach 1 Score: {results['Approach 1']:.4f}")
 
     # ====================================================================
@@ -320,8 +361,14 @@ def run_experiment():
             img, mask = img.to(Config.DEVICE), mask.to(Config.DEVICE)
             
             # Simulate noisy sparse-view CT scan
-            y_clean = physics(img)
-            y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+            if(Config.MODALITY=="CT"):
+                y_clean = physics(img)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
+            elif(Config.MODALITY=="MRI"):
+                imaginary_part = torch.zeros_like(img)
+                complex_input = torch.cat([img, imaginary_part], dim=1)
+                y_clean = physics(complex_input)
+                y = y_clean + Config.NOISE_SIGMA * torch.randn_like(y_clean)
             
             # ============================================================
             # STEP A: Solve Inner Problem ONCE (shared between U-Net and theta updates)
@@ -342,7 +389,10 @@ def run_experiment():
             # STEP B: Update U-Net Weights (Standard Backprop)
             # ============================================================
             w_fixed = w_star.detach().clone().requires_grad_(False)
-            x_in = norm(w_fixed)
+            if(Config.MODALITY=="CT"): x_in = norm(w_fixed)
+            elif(Config.MODALITY=="MRI"):
+                magnitude = torch.sqrt(w_fixed[:, 0:1, :, :]**2 + w_fixed[:, 1:2, :, :]**2)
+                x_in = norm_z_score(magnitude)
             
             model_joint.train()
             opt_model.zero_grad()
@@ -365,7 +415,8 @@ def run_experiment():
                 inner_lr=Config.INNER_LR,
                 inner_steps=Config.INNER_STEPS,
                 cg_max_iter=Config.HOAG_CG_MAX_ITER,
-                verbose=0
+                verbose=0,
+                modality=Config.MODALITY
             )
             
             # Update theta using Adam with HOAG-computed hypergradient
@@ -384,7 +435,7 @@ def run_experiment():
         torch.save(model_joint.state_dict(), path_joint)
         torch.save({'theta': theta, 'hoag_state_epsilon': hoag_state_joint.epsilon_tol}, path_theta_joint)
 
-    results['Approach 2'] = validate(model_joint, test_loader, physics, theta, Config.INNER_STEPS, mode="hoag")
+    results['Approach 2'] = validate(model_joint, test_loader, physics, theta, Config.INNER_STEPS, mode="hoag", modality=Config.MODALITY)
     
     # ====================================================================
     # FINAL RESULTS
