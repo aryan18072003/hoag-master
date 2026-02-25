@@ -158,7 +158,6 @@ def hoag_step(theta, y, physics_op, model, loss_fn, mask,
     hyper_grad = implicit_term
     
     state.g_func_old = val_loss_value
-    state.decrease_tolerance()
     
     if verbose > 0:
         print(f'  Outer loss: {val_loss_value:.6f} | '

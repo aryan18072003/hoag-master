@@ -344,6 +344,7 @@ def run_experiment():
             
             print_progress(ep, i, len(train_loader), val_loss_value, theta, "Appr 1 (FoE)")
         
+        hoag_state.decrease_tolerance()
         print(f"  [eps_tol: {hoag_state.epsilon_tol:.2e}]")
         torch.save({'theta': theta, 'hoag_state_epsilon': hoag_state.epsilon_tol}, path_hoag)
 
@@ -442,6 +443,7 @@ def run_experiment():
             
             print_progress(ep, i, len(train_loader), val_loss_value, theta, "Appr 2 (Joint)")
         
+        hoag_state_joint.decrease_tolerance()
         print(f"  [eps_tol: {hoag_state_joint.epsilon_tol:.2e}]")
         torch.save(model_joint.state_dict(), path_joint)
         torch.save({'theta': theta, 'hoag_state_epsilon': hoag_state_joint.epsilon_tol}, path_theta_joint)
