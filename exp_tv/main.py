@@ -34,7 +34,7 @@ class Config:
     BATCH_SIZE = 4
     
     # --- SINGLE PHYSICS SETTING (SPARSE) ---
-    ACCEL = 6            # 6 for ct and for mri
+    ACCEL = 6            # 6 for ct and for 4 mri
     NOISE_SIGMA = 0.5  
     CENTER_FRAC = 0.08
     

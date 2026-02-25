@@ -12,7 +12,6 @@ def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_ep
     
     # --- Term 1: Data fidelity Hessian-vector product ---
     # H_fid = (2/n) * AᵀA  where n = y.numel()
-    # This is the exact Hessian of mean((y - Aw)²) w.r.t. w
     with torch.no_grad():
         Av = physics_op.A(v_detached)
         AtAv = physics_op.A_adjoint(Av)
@@ -20,7 +19,6 @@ def hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, v, fd_ep
     term1 = (2.0 / n) * AtAv
     
     # --- Term 2: Regularizer Hessian-vector product ---
-    # ∇²_ww R_θ(w*) · v  via autograd
     from physics import regularizer_only
     w_for_reg = w_star.detach().requires_grad_(True)
     with torch.enable_grad():
@@ -51,7 +49,7 @@ def conjugate_gradient(inner_loss_fn, w_star, theta, y, physics_op, b,
     # Initial residual: r = b - H*x
     if warm_start is not None:
         Ax = hessian_vector_product(inner_loss_fn, w_star, theta, y, physics_op, x)
-        Ax = Ax + 1e-3 * x  # Tikhonov damping
+        Ax = Ax + 1e-3 * x 
         r = b.detach() - Ax
     else:
         r = b.detach().clone()
